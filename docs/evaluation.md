@@ -144,6 +144,8 @@ headers = { "X-Custom-Header" = "value" }
 
 In `[[eval]]` TOML configs you can set extra headers as `headers = { ... }` and/or as a list `header = ["Name: Value", ...]` (same form as repeated `--header`). Merge order is: registry row, then the `headers` table, then each `header` / `--header` line, with later entries overriding the same name.
 
+In addition to user-specified headers, `prime eval` automatically includes an `X-Session-ID` header on every inference request, set to the `example_id` from the rollout state. This enables sticky routing at the inference router level when supported.
+
 To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.
 
 Then use the alias directly:
