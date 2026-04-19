@@ -2,7 +2,14 @@ from collections.abc import Mapping
 from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
-from openai.types.chat import ChatCompletion, ChatCompletionAssistantMessageParam
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionAssistantMessageParam,
+)
+from openai.types.chat.chat_completion_message_function_tool_call_param import (
+    ChatCompletionMessageFunctionToolCallParam,
+    Function,
+)
 
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
@@ -92,6 +99,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return {k: v for k, v in sampling_args.items() if v is not None}
 
         sampling_args = normalize_sampling_args(sampling_args)
+        lineage_key = kwargs.pop("lineage_key", None)
         state = cast(State, kwargs.pop("state"))
         extra_headers = kwargs.pop("extra_headers", None)
         # Use standard /chat/completions for: (1) first turn (no prior tokens
@@ -108,7 +116,15 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
-        prompt_ids = await self.get_prompt_ids(state, prompt, tools)
+        # Multi-agent envs pass lineage_key explicitly via
+        # Environment.get_model_response so prefix matching only consults
+        # steps authored by the same speaker. Keep the state-based lookup
+        # as a migration fallback for older callers.
+        if lineage_key is None and isinstance(state, dict):
+            lineage_key = state.get("_lineage_key")
+        prompt_ids = await self.get_prompt_ids(
+            state, prompt, tools, lineage_key=lineage_key
+        )
         if prompt_ids is None:
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
@@ -136,6 +152,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         state: State,
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
+        *,
+        lineage_key: str | None = None,
     ) -> list[int] | None:
         """
         Build prompt_ids for the next turn by stitching engine tokens with
@@ -163,7 +181,13 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         async def find_largest_prefix_match() -> tuple[list[int], bool, int] | None:
             """Scan trajectory backwards for the step whose messages form the
             longest prefix of prompt_messages. Returns
-            (token_ids, is_truncated, prefix_len) or None."""
+            (token_ids, is_truncated, prefix_len) or None.
+
+            When ``lineage_key`` is provided, only steps whose
+            ``extras["member_id"]`` matches are considered. This keeps
+            per-speaker prefix caches from colliding in multi-agent
+            rollouts where speakers' prompts share a dataset prefix but
+            diverge in history."""
             normalized_prompt_messages = normalize_for_comparison(prompt_messages)
             best_prefix_len = -1
             best_step = None
@@ -171,6 +195,10 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 step_tokens = step["tokens"]
                 if step_tokens is None:
                     continue
+                if lineage_key is not None:
+                    extras = step.get("extras") or {}
+                    if extras.get("member_id") != lineage_key:
+                        continue
                 step_messages = cast(Any, [*step["prompt"], *step["completion"]])
                 step_prompt_messages, _ = await self.to_native_prompt(step_messages)
                 normalized_step_messages = normalize_for_comparison(
@@ -231,9 +259,37 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         # assistant and env response is correct, while avoiding template behaviors
         # that depend on the assistant being the last message (e.g., Qwen3's
         # context-dependent think block injection with add_generation_prompt=False).
-        dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
-            role="assistant", content="x"
-        )
+        # Collect tool_call_ids from leading tool messages so the dummy
+        # assistant satisfies chat-template validation ("tool message must
+        # follow an assistant message with a tool call").
+        tool_call_ids: list[str] = []
+        for msg in env_messages:
+            if _get_role(msg) != "tool":
+                break
+            tc_id = (
+                msg.get("tool_call_id")
+                if hasattr(msg, "get")
+                else getattr(msg, "tool_call_id", None)
+            )
+            if tc_id:
+                tool_call_ids.append(tc_id)
+
+        if tool_call_ids:
+            dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
+                role="assistant",
+                tool_calls=[
+                    ChatCompletionMessageFunctionToolCallParam(
+                        id=tc_id,
+                        type="function",
+                        function=Function(name="f", arguments="{}"),
+                    )
+                    for tc_id in tool_call_ids
+                ],
+            )
+        else:
+            dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
+                role="assistant", content="x"
+            )
 
         try:
             bridge_full_ids = await self.tokenize(

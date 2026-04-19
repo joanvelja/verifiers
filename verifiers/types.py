@@ -36,6 +36,7 @@ ClientType = Literal[
     "openai_chat_completions",
     "openai_chat_completions_token",
     "anthropic_messages",
+    "nemorl_chat_completions",
 ]
 MessageType = Literal["chat", "completion"]  # deprecated
 
@@ -229,7 +230,7 @@ class TrajectoryStep(TypedDict):
 
 class BaseRolloutInput(TypedDict):
     prompt: Messages
-    example_id: int
+    example_id: int | str
     task: str
 
 
@@ -261,14 +262,15 @@ class RolloutOutput(dict):
     JSON-serializable.
 
     Required fields: example_id, task, prompt, completion, reward, timing,
-                     is_completed, is_truncated, metrics
+                     is_completed, is_truncated, metrics, sampling_args,
+                     trajectory_id
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
-                     token_usage
+                     token_usage, mar_score
     Additional fields: arbitrary serializable state_columns
     """
 
     # Required fields
-    example_id: int
+    example_id: int | str
     task: str
     prompt: Messages | None
     completion: Messages | None
@@ -277,6 +279,8 @@ class RolloutOutput(dict):
     is_completed: bool
     is_truncated: bool
     metrics: dict[str, float]
+    sampling_args: "SamplingArgs"  # required by multi_agent_bridge
+    trajectory_id: str  # required by multi_agent_bridge
     # Optional fields
     answer: str
     info: Info
@@ -285,6 +289,23 @@ class RolloutOutput(dict):
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
     token_usage: TokenUsage
+    mar_score: "MARScore"  # populated by MultiAgentRubric subclasses
+
+
+class MemberRollout(TypedDict):
+    """RolloutOutput-compatible dict with per-member multi-agent metadata."""
+
+    # Training-path fields (read by pretokenize -> interleave -> TrainingSample).
+    example_id: int | str
+    task: str
+    trajectory: list[TrajectoryStep]
+    sampling_args: dict[str, Any]
+    error: ErrorInfo | None
+    reward: float
+
+    # Multi-agent metadata
+    episode_id: str
+    member_id: str
 
 
 class State(dict):
@@ -311,7 +332,7 @@ class State(dict):
 
     def __getitem__(self, key: str) -> Any:
         # forward to input if exists
-        if key in self.INPUT_FIELDS and "input" in self:
+        if key in self.INPUT_FIELDS and super().__contains__("input"):
             input_obj = super().__getitem__("input")
             if key in input_obj:
                 return input_obj[key]
@@ -319,12 +340,28 @@ class State(dict):
 
     def __setitem__(self, key: str, value: Any) -> None:
         # forward to input if exists
-        if key in self.INPUT_FIELDS and "input" in self:
+        if key in self.INPUT_FIELDS and super().__contains__("input"):
             input_obj = super().__getitem__("input")
             if key in input_obj:
                 input_obj[key] = value
                 return
         super().__setitem__(key, value)
+
+    def __contains__(self, key: object) -> bool:
+        # Mirror __getitem__ forwarding so ``"answer" in state`` matches
+        # ``state["answer"]`` access. Without this override, membership
+        # checks see only top-level dict keys while reads silently reach
+        # into state["input"] — a subtle trap that bit gpqa_debate's
+        # build_marscore.
+        if (
+            isinstance(key, str)
+            and key in self.INPUT_FIELDS
+            and super().__contains__("input")
+        ):
+            input_obj = super().__getitem__("input")
+            if key in input_obj:
+                return True
+        return super().__contains__(key)
 
     def get(self, key: str, default: Any = None) -> Any:
         try:
@@ -376,6 +413,138 @@ class GenerateOutputs(TypedDict):
 
     outputs: list[RolloutOutput]
     metadata: GenerateMetadata
+
+
+class MemberScore(CustomBaseModel):
+    """Per-member outcome of one episode in a multi-agent rollout.
+
+    The bridge consumes ``reward`` (training signal) and ``member_id``
+    (advantage-baseline partition key in RAE). ``metrics`` projects to
+    wandb as ``f"{k}/{member_id}"`` at the serialization boundary.
+    ``parse_error_count`` propagates to ``f"parse_errors/{member_id}"``
+    when non-zero.
+
+    ``metrics`` is intentionally float-only — bools and ints must be
+    converted at the producer site so the aggregator can average without
+    a type check. Categorical/string telemetry doesn't belong here.
+    """
+
+    member_id: str
+    reward: float
+    parse_error_count: int = 0
+    metrics: dict[str, float] = Field(default_factory=dict)
+
+
+_RESERVED_FLAT_KEYS: frozenset[str] = frozenset(
+    {
+        # RolloutOutput canonical fields — kept in sync with RolloutOutput
+        # above. Projected MARScore keys must not collide with these,
+        # otherwise state_to_output's ``output[k] = v`` flattening loop
+        # silently rewrites the canonical field with metric data.
+        "example_id",
+        "task",
+        "prompt",
+        "completion",
+        "reward",
+        "timing",
+        "is_completed",
+        "is_truncated",
+        "metrics",
+        "answer",
+        "info",
+        "error",
+        "stop_condition",
+        "trajectory",
+        "tool_defs",
+        "token_usage",
+        "mar_score",
+        "trajectory_id",
+        "sampling_args",
+    }
+)
+
+
+class MARScore(CustomBaseModel):
+    """Member-Attributed Reward — single source of truth for episode scoring.
+
+    Replaces the legacy multi-key spread:
+
+    - ``state["reward"]``         -> ``MARScore.episode_scalar``
+    - ``state["metrics"]``        -> ``MARScore.to_wandb_flat()`` (boundary)
+    - ``state["member_rewards"]`` -> ``{m.member_id: m.reward for m in members}``
+    - ``state["commits"]``        -> deleted (recomputable from trajectory)
+    - ``state["error_info"]``     -> deleted (state["error"] is the channel)
+
+    Episode-level telemetry is split by purpose so the wandb projection
+    can't accidentally average a categorical sentinel like a winner-index
+    encoded as a float (a ZIP-code mistake):
+
+    - ``episode_metrics``      averageable scalars only (accuracy, agreement)
+    - ``episode_categorical``  codes/labels (winner = "debater_a"/"tie"/None)
+    - ``episode_error``        error metadata when the rollout failed
+
+    Schema invariants enforced at construction (duplicate member_id, empty
+    members) — drift between rubric writer and bridge reader is structurally
+    impossible after this lands.
+    """
+
+    members: list[MemberScore]
+    episode_scalar: float
+    episode_metrics: dict[str, float] = Field(default_factory=dict)
+    episode_categorical: dict[str, str | None] = Field(default_factory=dict)
+    episode_error: dict[str, str] | None = None
+
+    @field_validator("members")
+    @classmethod
+    def _validate_members(cls, v: list[MemberScore]) -> list[MemberScore]:
+        if not v:
+            raise ValueError("MARScore.members cannot be empty")
+        ids = [m.member_id for m in v]
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"Duplicate member_id in MARScore: {ids}")
+        return v
+
+    def by_id(self) -> dict[str, MemberScore]:
+        """O(N) lookup table; small N, no need to memoize."""
+        return {m.member_id: m for m in self.members}
+
+    def to_metrics_flat(self) -> dict[str, float]:
+        """Projection of averageable scalars to flat wandb keys.
+
+        Episode-level scalars stay top-level. Per-member metrics project
+        to ``f"{k}/{member_id}"``. Reward and parse_error_count get
+        canonical prefixes. Categorical / error fields are NOT included
+        — those live under their own MARScore fields and are projected
+        separately at the serialization boundary.
+
+        Reserved keys (canonical ``RolloutOutput`` fields) are rejected:
+        without this guard, an ``episode_metrics={'reward': -1}`` would
+        silently overwrite ``output['reward']`` at the wire boundary
+        (``state_to_output`` does ``output[k] = v`` for each flat key),
+        corrupting training signal.
+        """
+        out: dict[str, float] = {}
+        for k, v in self.episode_metrics.items():
+            if k in _RESERVED_FLAT_KEYS:
+                raise ValueError(
+                    f"MARScore.episode_metrics key {k!r} collides with a "
+                    f"reserved RolloutOutput field; rename it (e.g. "
+                    f"{k!s}_metric)"
+                )
+            out[k] = v
+        for m in self.members:
+            out[f"reward/{m.member_id}"] = m.reward
+            if m.parse_error_count:
+                out[f"parse_errors/{m.member_id}"] = float(m.parse_error_count)
+            for k, v in m.metrics.items():
+                if k in _RESERVED_FLAT_KEYS:
+                    raise ValueError(
+                        f"MemberScore.metrics key {k!r} collides with a "
+                        f"reserved RolloutOutput field; rename it (e.g. "
+                        f"{k!s}_metric)"
+                    )
+                out[f"{k}/{m.member_id}"] = v
+        return out
 
 
 class RolloutScore(TypedDict):

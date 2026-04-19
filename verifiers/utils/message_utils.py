@@ -173,6 +173,46 @@ def concat_messages(messages_list: list[Messages]) -> Messages:
     return result
 
 
+def fold_consecutive_user_messages(
+    messages: Messages,
+    separator: str = "\n\n",
+) -> Messages:
+    """Collapse runs of consecutive role=user messages into one.
+
+    Multi-agent envs emit prompts with neighbouring user messages
+    (opponent turns + current-agent instruction). Chat templates render
+    this as ``<|im_start|>user\\n…<|im_end|>`` repeated, which is OOD for
+    the model and breaks the stitcher's ``_is_valid_env_tail`` gate.
+    Folding collapses each user run into a single message whose content
+    is the run's pieces joined by ``separator``.
+
+    Contract: typed ``Messages`` in, typed ``Messages`` out. Callers with
+    raw dicts must ``normalize_messages`` first. Role-local — only user
+    runs fold; assistant / system / tool messages pass through untouched.
+    Multimodal (list-of-ContentPart) content also passes through — silent
+    concatenation of mixed parts is worse than the alt-role OOD. Preserves
+    extras (e.g. OpenAI ``name`` field under ``extra="allow"``) on the
+    merged message via ``model_copy``.
+
+    Idempotent; a no-op on lists without adjacent user messages.
+    """
+    out: list[Message] = []
+    for msg in messages:
+        if not out or msg.role != "user" or out[-1].role != "user":
+            out.append(msg)
+            continue
+        prev = out[-1]
+        prev_content = prev.content
+        new_content = msg.content
+        if not isinstance(prev_content, str) or not isinstance(new_content, str):
+            out.append(msg)
+            continue
+        out[-1] = prev.model_copy(
+            update={"content": prev_content + separator + new_content}
+        )
+    return out
+
+
 def message_to_printable(message: Any) -> Any:
     """
     Removes image_url objects from message content.

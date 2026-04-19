@@ -115,12 +115,12 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 ### RolloutInput
 
 ```python
-class RolloutInput(TypedDict):
-    prompt: Messages        # Required
-    example_id: int         # Required
-    task: str               # Required
-    answer: str             # Optional
-    info: Info              # Optional
+class RolloutInput(TypedDict, total=False):
+    prompt: Messages         # Required
+    example_id: int | str    # Required
+    task: str                # Required
+    answer: str              # Optional
+    info: Info | str         # Optional
 ```
 
 ### RolloutOutput
@@ -128,7 +128,7 @@ class RolloutInput(TypedDict):
 ```python
 class RolloutOutput(dict):
     # Required fields
-    example_id: int
+    example_id: int | str
     task: str
     prompt: Messages | None
     completion: Messages | None
@@ -137,16 +137,20 @@ class RolloutOutput(dict):
     is_completed: bool
     is_truncated: bool
     metrics: dict[str, float]
+    sampling_args: SamplingArgs
+    trajectory_id: str
     # Optional fields
     answer: str
     info: Info
-    error: str | None
+    error: ErrorInfo | None
     stop_condition: str | None
     trajectory: list[TrajectoryStep]
-    tool_defs: list[Tool] | None
+    tool_defs: list[Tool]
+    token_usage: TokenUsage
+    mar_score: MARScore  # populated by MultiAgentRubric subclasses
 ```
 
-Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
+Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk. `mar_score` is populated only when a `MultiAgentRubric` subclass handled scoring; use `verifiers.rollout_to_member_rollouts(output)` to split an episode-level output into per-member `MemberRollout` records for training.
 
 ### TrajectoryStep
 
@@ -200,6 +204,78 @@ class GenerateOutputs(TypedDict):
 ```
 
 Output from `Environment.generate()`. Contains a list of `RolloutOutput` objects (one per rollout) and generation metadata. Each `RolloutOutput` is a serialized, JSON-compatible dict containing the rollout's prompt, completion, answer, reward, metrics, timing, and other per-rollout data.
+
+### MemberScore
+
+```python
+class MemberScore(CustomBaseModel):
+    member_id: str
+    reward: float
+    parse_error_count: int = 0
+    metrics: dict[str, float] = Field(default_factory=dict)
+```
+
+Per-member outcome of one episode in a multi-agent rollout. The bridge consumes
+`reward` as the training signal and uses `member_id` as the advantage-baseline
+partition key in RAE. `metrics` projects to wandb as `f"{k}/{member_id}"` at
+the serialization boundary; `parse_error_count` propagates to
+`f"parse_errors/{member_id}"` when non-zero. `metrics` is intentionally
+float-only — bools and ints must be converted at the producer site so the
+aggregator can average without a type check.
+
+### MARScore
+
+```python
+class MARScore(CustomBaseModel):
+    members: list[MemberScore]
+    episode_scalar: float
+    episode_metrics: dict[str, float] = Field(default_factory=dict)
+    episode_categorical: dict[str, str | None] = Field(default_factory=dict)
+    episode_error: dict[str, str] | None = None
+```
+
+Member-Attributed Reward — single source of truth for episode scoring in
+multi-agent rollouts. Replaces the legacy multi-key spread across
+`state["reward"]`, `state["metrics"]`, and `state["member_rewards"]`.
+
+Episode-level telemetry is split by purpose so the wandb projection can't
+accidentally average a categorical sentinel:
+
+- `episode_metrics` — averageable scalars only (accuracy, agreement, etc.)
+- `episode_categorical` — codes/labels (e.g. winner = "debater_a"/"tie"/None)
+- `episode_error` — error metadata when the rollout failed
+
+Schema invariants (duplicate `member_id`, empty members) are enforced at
+construction so drift between rubric writer and bridge reader is structurally
+impossible.
+
+**Methods:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `by_id()` | `dict[str, MemberScore]` | Lookup table keyed by `member_id` |
+| `to_metrics_flat()` | `dict[str, float]` | Flat wandb projection: episode scalars stay top-level; per-member metrics become `f"{k}/{member_id}"`; `reward` and `parse_error_count` get canonical prefixes. Rejects keys that collide with reserved `RolloutOutput` fields. |
+
+### MemberRollout
+
+```python
+class MemberRollout(TypedDict):
+    # Training-path fields (read by pretokenize -> interleave -> TrainingSample)
+    example_id: int | str
+    task: str
+    trajectory: list[TrajectoryStep]
+    sampling_args: dict[str, Any]
+    error: ErrorInfo | None
+    reward: float
+    # Multi-agent metadata
+    episode_id: str
+    member_id: str
+```
+
+`RolloutOutput`-compatible dict with per-member multi-agent metadata. Produced
+by `verifiers.rollout_to_member_rollouts(output)`, which splits one
+episode-level `RolloutOutput` into one trainable rollout per member keyed on
+`(task, example_id, member_id)`.
 
 ### GenerateMetadata
 
@@ -279,7 +355,52 @@ class Environment(ABC):
     ): ...
 ```
 
-Abstract base class for all environments.
+#### MultiAgentEnv
+
+```python
+class MultiAgentEnv(Environment):
+    def __init__(
+        self,
+        *,
+        schedule: SlotProgram,
+        members: list[str],
+        agent_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
+        think_tag: str = "thinking",
+        **kwargs,
+    ): ...
+
+    async def build_prompt(
+        self, state: State, member_id: str, slot: TurnSlot
+    ) -> Messages: ...
+
+    async def render_completion(self, state: State) -> None: ...
+```
+
+Base class for N-actor rollout environments that share a transcript and a
+slot-based schedule.
+
+`MultiAgentEnv` is the real multi-agent runtime surface. It is not a protocol
+for external session orchestration; it is an `Environment` subclass that owns:
+
+- slot-scheduled rollout (`TurnSlot`, `SlotProgram`, `StaticSchedule`)
+- sequential vs simultaneous turn execution
+- atomic simultaneous-slot publish
+- stop conditions (`has_error`, `schedule_exhausted`, `prompt_too_long`)
+- trajectory-step construction tagged with `extras["member_id"]`
+- lineage-aware prompt caching support for token-stitch clients
+
+Subclasses supply the domain-specific pieces:
+
+- `build_prompt(state, member_id, slot)`
+- `render_completion(state)`
+- optional `extract_fields(...)`
+- optional `visibility_policy(...)`
+
+Multi-agent scoring writes one structured `state["mar_score"]` payload. At the
+serialization boundary, `state_to_output(...)` projects that to legacy
+episode-level keys. If you need one trainable rollout per actor, use
+`verifiers.rollout_to_member_rollouts(output)`, which returns
+`MemberRollout` records.
 
 **Generation methods:**
 

@@ -15,6 +15,7 @@ from verifiers.types import (
     ErrorInfo,
     GenerateMetadata,
     GenerateOutputs,
+    MARScore,
     RolloutOutput,
     SamplingArgs,
     State,
@@ -177,6 +178,13 @@ def state_to_output(
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
         tool_defs=state.get("tool_defs"),
+        # Per-rollout sampling_args are required by the multi-agent bridge
+        # (``rollout_to_member_rollouts`` reads ``output["sampling_args"]``)
+        # and useful for offline reproducibility even in the single-agent
+        # path. Default to ``{}`` — consumers apply their own fallbacks
+        # (e.g. temperature=1.0) on missing keys.
+        sampling_args=state.get("sampling_args") or {},
+        trajectory_id=state.get("trajectory_id", ""),
     )
     usage = _extract_state_token_usage(state)
     if usage is None:
@@ -228,10 +236,32 @@ def state_to_output(
         output.pop("answer")
     if "info" in output and not output["info"]:
         output.pop("info")
-    # flatten metrics to top-level keys (backwards compatibility)
-    state_metrics = state.get("metrics") or {}
-    for k, v in state_metrics.items():
-        output[k] = v
+    # MARScore: single source of truth for multi-agent episode scoring.
+    # Project to legacy keys at the boundary one-way: output["reward"] +
+    # output["metrics"] (averageable scalars only) so downstream consumers
+    # (wandb, GRPO advantage) see the same shape as single-agent envs.
+    # Categorical telemetry (winner) and error metadata stay nested under
+    # output["mar_score"] — projecting them to top-level would invite the
+    # ZIP-code mistake of averaging sentinel codes alongside real metrics.
+    mar = state.get("mar_score")
+    if mar is not None:
+        if not isinstance(mar, MARScore):
+            mar = MARScore.model_validate(mar)
+        output["mar_score"] = mar.model_dump(exclude_none=True)
+        output["reward"] = mar.episode_scalar
+        flat_metrics = mar.to_metrics_flat()
+        for k, v in flat_metrics.items():
+            output[k] = v
+        output["metrics"] = dict(flat_metrics)
+    else:
+        # Single-agent legacy path: rubric writes state["metrics"] directly.
+        state_metrics = state.get("metrics") or {}
+        for k, v in state_metrics.items():
+            output[k] = v
+        # Normalize: if the legacy rubric left state["metrics"] as None
+        # (init_state's seed), downstream consumers expect {} not None.
+        if output.get("metrics") is None:
+            output["metrics"] = {}
     # add state columns (must be serializable)
     for col in state_columns or []:
         value = state.get(col)
