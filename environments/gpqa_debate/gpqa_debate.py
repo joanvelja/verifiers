@@ -69,7 +69,7 @@ import hashlib
 import logging
 import os
 import random
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from datasets import Dataset, load_dataset
 
@@ -84,6 +84,12 @@ from verifiers.types import ClientConfig, State
 _log = logging.getLogger(__name__)
 
 LETTERS = ("A", "B", "C", "D")
+
+# Public typing of the two orthogonal seat-assignment knobs. Literal
+# narrows for callers / type-checkers; the runtime branch below raises
+# on typos coming in from TOML strings, where Literal has no teeth.
+SeatMode = Literal["bernoulli", "round_robin", "hash"]
+SeatPin = Literal["a", "b"]
 
 DEFAULT_SCHEDULE = [
     {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
@@ -104,8 +110,8 @@ def _format_row(
     rng: random.Random,
     *,
     example_idx: int,
-    seat_mode: str | None,
-    pin: str | None,
+    seat_mode: SeatMode | None,
+    pin: SeatPin | None,
     seat_rng: random.Random | None,
 ) -> dict:
     correct = row["Correct Answer"].strip()
@@ -150,9 +156,9 @@ def _build_dataset(
     n: int,
     seed: int,
     *,
-    learner_seat_mode: str | None = None,
+    learner_seat_mode: SeatMode | None = None,
     learner_seat_seed: int = 0,
-    pin_learner_seat: str | None = None,
+    pin_learner_seat: SeatPin | None = None,
 ) -> Dataset:
     vf.ensure_keys(["HF_TOKEN"])
     raw = list(load_dataset("Idavidrein/gpqa", subset, split="train"))
@@ -187,8 +193,8 @@ def _pick_learner_seat(
     *,
     example_idx: int,
     example_id: str,
-    mode: str,
-    pin: str | None,
+    mode: SeatMode,
+    pin: SeatPin | None,
     rng: random.Random | None,
 ) -> str:
     """Pick the seat the learner occupies this episode.
@@ -298,12 +304,7 @@ def _make_openai_compatible_client(
     """Plain OpenAI-compatible client (OpenAI, vLLM, SGLang, Anthropic's
     OpenAI-compatible endpoint, ...). For per-request provider pinning use
     ``_make_openrouter_client`` instead."""
-    api_key = os.environ.get(api_key_var)
-    if not api_key:
-        raise RuntimeError(
-            f"{api_key_var} is not set -- required for external-opponent "
-            f"routing in gpqa_debate"
-        )
+    vf.ensure_keys([api_key_var])
     return OpenAIChatCompletionsClient(
         ClientConfig(
             api_key_var=api_key_var,
@@ -358,6 +359,31 @@ def _build_external_opponent_bindings(
 # ---------------------------------------------------------------------------
 
 
+def _warn_shared_vllm_topology(opponent_model: str) -> None:
+    """Fire once per env load when opponent_base_url is omitted.
+
+    Shared-vLLM / LoRA-self routing is correct but non-obvious from the
+    TOML. A caller who sets opponent_model without a base_url might
+    expect "frozen external opponent" and instead silently get "same
+    endpoint as learner with a different model string" -- which
+    collapses to self-play if vLLM isn't launched with --enable-lora.
+    """
+    _log.warning(
+        "gpqa_debate: opponent_base_url not set; opponent (and judge) "
+        "will share the rollout-default client (same vLLM as the "
+        "learner). This is the shared-vLLM / LoRA-self topology -- "
+        "opponent routes to model=%r on the learner's endpoint. For "
+        "the learner and opponent to produce different outputs, launch "
+        "vLLM with --enable-lora and have the trainer sync the learner's "
+        "adapter under a distinct model alias; otherwise both seats will "
+        "produce identical rollouts (degenerate self-play). Run "
+        "scripts/preflight_lora_smoke.py before the first training "
+        "step. Set opponent_base_url to a distinct endpoint to opt into "
+        "the two-instance topology instead.",
+        opponent_model,
+    )
+
+
 def load_environment(
     prompts_ref: str = "selfplay",
     subset: str = "gpqa_diamond",
@@ -378,9 +404,9 @@ def load_environment(
     opponent_api_key_var: str = "OPENAI_API_KEY",
     judge_base_url: str | None = None,
     judge_api_key_var: str = "OPENAI_API_KEY",
-    learner_seat_mode: str = "bernoulli",
+    learner_seat_mode: SeatMode = "bernoulli",
     learner_seat_seed: int = 0,
-    pin_learner_seat: str | None = None,
+    pin_learner_seat: SeatPin | None = None,
     **extra: Any,
 ) -> DebateEnv:
     """vf-eval / training entry point. See module docstring for env_args schema.
@@ -440,19 +466,9 @@ def load_environment(
         )
 
     if external_opponent:
-        # Client routing is three-way:
-        #   * base_url set      -> dedicated client for that endpoint
-        #   * base_url is None  -> None (= reuse rollout-default client,
-        #                          i.e. same vLLM as the learner, handy
-        #                          for the LoRA-self setup)
-        # Judge gets one extra fallback on top: if no judge endpoint was
-        # given but an opponent endpoint was, reuse the opponent client --
-        # the common-case deployment is one frozen endpoint serving both
-        # non-learner roles, which is exactly what the judge_model fallback
-        # to opponent_model encodes. Without this tier, judge traffic
-        # would silently route to the learner's endpoint whenever the
-        # caller relied on the documented "judge falls back to opponent"
-        # path.
+        # Judge inherits the opponent client when no explicit judge
+        # endpoint is set, so judge traffic lands on the frozen endpoint
+        # rather than silently routing through the learner's.
         opp_client = (
             _make_openai_compatible_client(opponent_base_url, opponent_api_key_var)
             if opponent_base_url is not None
@@ -462,27 +478,12 @@ def load_environment(
             judge_client = _make_openai_compatible_client(
                 judge_base_url, judge_api_key_var
             )
-        elif opponent_base_url is not None:
-            judge_client = opp_client
         else:
-            judge_client = None
+            judge_client = opp_client
 
         if opponent_base_url is None:
-            _log.warning(
-                "gpqa_debate: opponent_base_url not set; opponent (and judge) "
-                "will share the rollout-default client (same vLLM as the "
-                "learner). This is the shared-vLLM / LoRA-self topology -- "
-                "opponent routes to model=%r on the learner's endpoint. For "
-                "the learner and opponent to produce different outputs, "
-                "launch vLLM with --enable-lora and have the trainer sync "
-                "the learner's adapter under a distinct model alias; "
-                "otherwise both seats will produce identical rollouts "
-                "(degenerate self-play). Run "
-                "scripts/preflight_lora_smoke.py before the first training "
-                "step. Set opponent_base_url to a distinct endpoint to opt "
-                "into the two-instance topology instead.",
-                opponent_model,
-            )
+            _warn_shared_vllm_topology(opponent_model)
+
         bindings_fn = _build_external_opponent_bindings(
             opp_client=opp_client,
             opp_model=opponent_model,

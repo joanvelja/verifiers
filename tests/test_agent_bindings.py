@@ -218,7 +218,7 @@ def test_bindings_fn_missing_key_at_runtime_raises():
 
     bad_state = State()
     bad_state["input"] = {"info": {"learner_seat": "debater_b"}}
-    with pytest.raises(ValueError, match="omitted members"):
+    with pytest.raises(ValueError, match="omits members"):
         env.get_agent_binding("debater_a", bad_state)
 
 

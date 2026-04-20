@@ -109,40 +109,21 @@ class MultiAgentEnv(vf.Environment):
             )
         self.schedule: SlotProgram = schedule
         self.members: list[str] = list(members)
+        self._members_set: frozenset[str] = frozenset(members)
         self.agent_bindings: dict[str, tuple[Client | None, str | None]] = dict(
             bindings
         )
         self._agent_bindings_fn = agent_bindings_fn
         self.think_tag = think_tag
 
-        # Cross-check: the bindings function must cover every declared
-        # member at init time. Probed with a dummy State because the
-        # real state isn't available until rollout. Subclasses override
-        # ``_build_probe_state`` to fill domain-specific info keys the
-        # function reads (e.g. ``info.learner_seat``). A binding fn that
-        # KeyErrors on the probe would break on an equivalent real state.
+        # Probe the dynamic bindings fn on a dummy state so callers see
+        # fn bugs (wrong shape / missing or stray members) at construction
+        # rather than many slots into the first rollout. Subclasses
+        # override ``_build_probe_state`` to seed domain-specific info
+        # keys their fn reads (e.g. ``info.learner_seat`` for debate).
         if agent_bindings_fn is not None:
             probe = self._build_probe_state()
-            probe_bindings = agent_bindings_fn(probe)
-            if not isinstance(probe_bindings, dict):
-                raise TypeError(
-                    f"agent_bindings_fn must return a dict, got "
-                    f"{type(probe_bindings).__name__}"
-                )
-            missing = set(self.members) - set(probe_bindings)
-            if missing:
-                raise ValueError(
-                    f"agent_bindings_fn(probe_state) omits members "
-                    f"{sorted(missing)} (returned keys: "
-                    f"{sorted(probe_bindings)}); must cover every "
-                    f"declared member."
-                )
-            stray_r = set(probe_bindings) - set(self.members)
-            if stray_r:
-                raise ValueError(
-                    f"agent_bindings_fn(probe_state) returned keys "
-                    f"{sorted(stray_r)} not in members {self.members}"
-                )
+            self._validate_dynamic_bindings(agent_bindings_fn(probe), context="probe")
 
     # -- abstract: subclass must implement -----------------------------------
 
@@ -189,29 +170,52 @@ class MultiAgentEnv(vf.Environment):
         }
         return probe
 
+    def _validate_dynamic_bindings(
+        self,
+        bindings: object,
+        *,
+        context: str,
+    ) -> None:
+        """Raise if ``bindings`` isn't a dict or doesn't match ``self.members``.
+
+        Shared between the init-time probe and per-call runtime validation
+        in ``_get_bindings``. A dynamic fn whose shape or key set varies
+        per state is possible, so the per-call check catches divergences
+        the probe can't. ``context`` (e.g. ``"probe"`` or ``"runtime"``)
+        is stitched into the error message for diagnosability.
+        """
+        if not isinstance(bindings, dict):
+            raise TypeError(
+                f"agent_bindings_fn must return a dict ({context}), got "
+                f"{type(bindings).__name__}"
+            )
+        keys = set(bindings)
+        missing = self._members_set - keys
+        if missing:
+            raise ValueError(
+                f"agent_bindings_fn omits members {sorted(missing)} "
+                f"({context}); returned keys={sorted(keys)}, "
+                f"members={self.members}"
+            )
+        stray = keys - self._members_set
+        if stray:
+            raise ValueError(
+                f"agent_bindings_fn returned keys {sorted(stray)} not in "
+                f"members {self.members} ({context})"
+            )
+
     def _get_bindings(
         self, state: State
     ) -> dict[str, tuple[Client | None, str | None]]:
         """Return the full (member_id -> (client, model)) binding map.
 
-        Either the static ``agent_bindings`` dict or a fresh call to the
-        bindings function. Validates coverage + shape at runtime too --
-        the init probe can't catch a dynamic fn that returns different
-        keys or a different shape for different states.
+        Either the static ``agent_bindings`` dict or a fresh validated
+        call to the bindings function.
         """
         if self._agent_bindings_fn is None:
             return self.agent_bindings
         bindings = self._agent_bindings_fn(state)
-        if not isinstance(bindings, dict):
-            raise TypeError(
-                f"agent_bindings_fn must return a dict, got {type(bindings).__name__}"
-            )
-        missing = set(self.members) - set(bindings)
-        if missing:
-            raise ValueError(
-                f"agent_bindings_fn omitted members {sorted(missing)} "
-                f"(returned keys: {sorted(bindings)}); members={self.members}"
-            )
+        self._validate_dynamic_bindings(bindings, context="runtime")
         return bindings
 
     def get_agent_binding(
