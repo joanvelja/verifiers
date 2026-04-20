@@ -66,6 +66,7 @@ All optional. Any omitted keys inherit the vf-eval top-level model/provider.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import random
 from typing import Any, Callable
@@ -80,6 +81,7 @@ from verifiers.clients.openai_chat_completions_client import (
 from verifiers.envs.debate_env import DebateEnv, load_environment as _debate_load_env
 from verifiers.types import ClientConfig, State
 
+_log = logging.getLogger(__name__)
 
 LETTERS = ("A", "B", "C", "D")
 
@@ -464,6 +466,23 @@ def load_environment(
             judge_client = opp_client
         else:
             judge_client = None
+
+        if opponent_base_url is None:
+            _log.warning(
+                "gpqa_debate: opponent_base_url not set; opponent (and judge) "
+                "will share the rollout-default client (same vLLM as the "
+                "learner). This is the shared-vLLM / LoRA-self topology -- "
+                "opponent routes to model=%r on the learner's endpoint. For "
+                "the learner and opponent to produce different outputs, "
+                "launch vLLM with --enable-lora and have the trainer sync "
+                "the learner's adapter under a distinct model alias; "
+                "otherwise both seats will produce identical rollouts "
+                "(degenerate self-play). Run "
+                "scripts/preflight_lora_smoke.py before the first training "
+                "step. Set opponent_base_url to a distinct endpoint to opt "
+                "into the two-instance topology instead.",
+                opponent_model,
+            )
         bindings_fn = _build_external_opponent_bindings(
             opp_client=opp_client,
             opp_model=opponent_model,
