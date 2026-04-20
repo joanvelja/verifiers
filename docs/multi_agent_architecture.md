@@ -139,7 +139,7 @@ A walk-through of a single sequential slot, with every state mutation named. Con
 
 1. `_prepare_prompt(state, "debater_a", slot)` calls the subclass's `build_prompt`, then runs `fold_consecutive_user_messages` and `maybe_normalize_messages`. The returned `Messages` list is what goes on the wire. The subclass is responsible for the monotonic-extension property here; the env does not validate it at runtime (the cost would dominate the tokenization savings the invariant buys).
 
-2. `resolve_agent("debater_a")` returns `(client_override, model_override)` from `self.agent_overrides`, falling back to `(None, None)` for default routing. Self-play and fixed-opponent setups use this to pin different speakers to different endpoints.
+2. `resolve_agent("debater_a", state)` returns `(client_override, model_override)`. Two routing sources: when `agent_overrides_resolver` is set at `__init__`, the resolver is called on the current `state` to produce a per-episode override map (used for learner-vs-fixed training — the learner seat maps to `(None, None)` and the opponent/judge seats map to fixed external clients); otherwise falls back to the static `self.agent_overrides` dict. Both yield `(None, None)` for members with no override (use the rollout-default client/model). Self-play and fixed-opponent setups use the static dict; per-episode seat assignment uses the resolver.
 
 3. `self._get_usage_tracker(state, create_if_missing=True)` returns the parent `StateUsageTracker` attached to `state`. Sequential slots charge directly against the parent — no fork/merge dance, because there is no concurrency.
 

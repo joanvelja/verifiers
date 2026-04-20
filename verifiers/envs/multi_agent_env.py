@@ -24,7 +24,7 @@ import asyncio
 import logging
 import re
 from abc import abstractmethod
-from typing import Any, Literal, final
+from typing import Any, Callable, Literal, final
 
 import verifiers as vf
 from verifiers.clients import Client
@@ -87,6 +87,10 @@ class MultiAgentEnv(vf.Environment):
         schedule: SlotProgram,
         members: list[str],
         agent_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
+        agent_overrides_resolver: Callable[
+            [State], dict[str, tuple[Client | None, str | None]]
+        ]
+        | None = None,
         think_tag: str = "thinking",
         **kwargs: Any,
     ) -> None:
@@ -102,13 +106,43 @@ class MultiAgentEnv(vf.Environment):
                 f"agent_overrides keys not in members: {sorted(stray)} "
                 f"(members={members})"
             )
-
         self.schedule: SlotProgram = schedule
         self.members: list[str] = list(members)
         self.agent_overrides: dict[str, tuple[Client | None, str | None]] = dict(
             overrides
         )
+        self._agent_overrides_resolver = agent_overrides_resolver
         self.think_tag = think_tag
+
+        # Cross-check: the resolver must cover every declared member at
+        # init time. Probed with a dummy State because the real state
+        # isn't available until rollout. Subclasses override
+        # ``_build_probe_state`` to fill domain-specific info keys their
+        # resolvers read (e.g. ``info.learner_seat``). A resolver that
+        # KeyErrors on the probe is a resolver bug -- it would break on
+        # an equivalent real state.
+        if agent_overrides_resolver is not None:
+            probe = self._build_probe_state()
+            overrides_probe = agent_overrides_resolver(probe)
+            if not isinstance(overrides_probe, dict):
+                raise TypeError(
+                    f"agent_overrides_resolver must return a dict, got "
+                    f"{type(overrides_probe).__name__}"
+                )
+            missing = set(self.members) - set(overrides_probe)
+            if missing:
+                raise ValueError(
+                    f"agent_overrides_resolver(probe_state) omits members "
+                    f"{sorted(missing)} (returned keys: "
+                    f"{sorted(overrides_probe)}); resolver must cover every "
+                    f"declared member."
+                )
+            stray_r = set(overrides_probe) - set(self.members)
+            if stray_r:
+                raise ValueError(
+                    f"agent_overrides_resolver(probe_state) returned keys "
+                    f"{sorted(stray_r)} not in members {self.members}"
+                )
 
     # -- abstract: subclass must implement -----------------------------------
 
@@ -136,9 +170,55 @@ class MultiAgentEnv(vf.Environment):
         """
         return None
 
-    def resolve_agent(self, member_id: str) -> tuple[Client | None, str | None]:
-        """Return (client, model) override for ``member_id`` or (None, None)."""
-        return self.agent_overrides.get(member_id, (None, None))
+    def _build_probe_state(self) -> State:
+        """Construct a minimal State used at init to dry-run the resolver.
+
+        Subclasses whose resolvers read domain-specific info keys
+        (e.g. ``info.learner_seat`` for debate) should override this to
+        seed those keys with plausible default values. The default probe
+        carries an empty ``info`` dict -- resolvers that KeyError on it
+        would break on any real state that hasn't set the key yet.
+        """
+        probe = State()
+        probe["input"] = {
+            "info": {},
+            "example_id": "_probe",
+            "task": "_probe",
+            "prompt": [],
+            "answer": "",
+        }
+        return probe
+
+    def _resolve_all(self, state: State) -> dict[str, tuple[Client | None, str | None]]:
+        """Return the full (member_id -> (client, model)) override map.
+
+        Either the static ``agent_overrides`` dict or a fresh call to
+        the resolver. Validates resolver coverage at runtime too --
+        the init probe can't catch resolvers that return different
+        keys for different states.
+        """
+        if self._agent_overrides_resolver is None:
+            return self.agent_overrides
+        overrides = self._agent_overrides_resolver(state)
+        missing = set(self.members) - set(overrides)
+        if missing:
+            raise ValueError(
+                f"agent_overrides_resolver omitted members {sorted(missing)} "
+                f"(returned keys: {sorted(overrides)}); members={self.members}"
+            )
+        return overrides
+
+    def resolve_agent(
+        self, member_id: str, state: State
+    ) -> tuple[Client | None, str | None]:
+        """Return (client, model) override for ``member_id`` in ``state``.
+
+        State-aware: when an ``agent_overrides_resolver`` is configured,
+        its per-state override dict is used; otherwise falls back to the
+        static ``agent_overrides`` mapping. Returns ``(None, None)`` for
+        members with no override (use rollout-default client/model).
+        """
+        return self._resolve_all(state).get(member_id, (None, None))
 
     def visibility_policy(self, utt: Utterance, viewer_id: str) -> VisibilityMode:
         """Control what ``viewer_id`` sees of ``utt``.
@@ -224,7 +304,7 @@ class MultiAgentEnv(vf.Environment):
     async def _run_sequential_slot(self, state: State, slot: TurnSlot) -> None:
         agent = slot.agents[0]
         prompt = await self._prepare_prompt(state, agent, slot)
-        agent_client, agent_model = self.resolve_agent(agent)
+        agent_client, agent_model = self.resolve_agent(agent, state)
         parent_tracker = self._get_usage_tracker(state, create_if_missing=True)
         response = await self.get_model_response(
             state,
@@ -276,7 +356,10 @@ class MultiAgentEnv(vf.Environment):
              succeeds atomically.
         """
         prompts = [await self._prepare_prompt(state, a, slot) for a in slot.agents]
-        overrides = [self.resolve_agent(a) for a in slot.agents]
+        # Resolve once per slot, not per agent — a dynamic resolver is
+        # a pure function on state, so N calls would be redundant.
+        overrides_map = self._resolve_all(state)
+        overrides = [overrides_map.get(a, (None, None)) for a in slot.agents]
 
         # Per-agent request contexts isolate the prefix-cache partition key
         # (``lineage_key``) and usage accounting across concurrent branches
