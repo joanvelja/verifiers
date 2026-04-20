@@ -1,20 +1,20 @@
-"""Tests for MultiAgentEnv's agent_overrides_resolver hook.
+"""Tests for MultiAgentEnv's agent_bindings_fn hook.
 
-The resolver is a state-aware sibling of the static ``agent_overrides``
+The bindings fn is a state-aware sibling of the static ``agent_bindings``
 dict: given the current rollout State it returns a per-state mapping of
 member_id -> (client, model). This enables per-episode routing like
-learner-vs-fixed training (STAGE 3 in
+external-opponent debate training (STAGE 3 in
 docs/plans/2026-04-20-stage3-learner-vs-fixed.md) without doubling the
 config surface with two env variants.
 
 Invariants under test:
 
-  * init-time dummy probe rejects resolvers that miss scheduled members
-  * init-time dummy probe rejects resolvers that return stray keys
+  * init-time dummy probe rejects bindings fns that miss scheduled members
+  * init-time dummy probe rejects bindings fns that return stray keys
   * init-time dummy probe rejects non-dict return values
-  * resolve_agent(member, state) routes through the resolver when set
-  * resolve_agent falls back to the static dict when no resolver
-  * simultaneous slots call the resolver once per slot, not once per agent
+  * get_agent_binding(member, state) routes through the fn when set
+  * get_agent_binding falls back to the static dict when no fn
+  * simultaneous slots call the fn once per slot, not once per agent
 """
 
 from __future__ import annotations
@@ -83,15 +83,15 @@ _SCHEDULE = StaticSchedule(
 _MEMBERS = ["debater_a", "debater_b", "judge"]
 
 
-def _build(resolver=None, agent_overrides=None) -> DebateEnv:
+def _build(bindings_fn=None, agent_bindings=None) -> DebateEnv:
     return DebateEnv(
         schedule=_SCHEDULE,
         prompts=_pack(),
         members=list(_MEMBERS),
         rubric=_stub_rubric(list(_MEMBERS)),
         dataset=lambda: None,
-        agent_overrides=agent_overrides,
-        agent_overrides_resolver=resolver,
+        agent_bindings=agent_bindings,
+        agent_bindings_fn=bindings_fn,
     )
 
 
@@ -100,10 +100,10 @@ def _build(resolver=None, agent_overrides=None) -> DebateEnv:
 # ---------------------------------------------------------------------------
 
 
-def test_resolver_missing_member_fails_at_init():
-    """Probe surfaces resolvers that miss a scheduled member."""
+def test_bindings_fn_missing_member_fails_at_init():
+    """Probe surfaces bindings fns that miss a scheduled member."""
 
-    def resolver(state):
+    def bindings_fn(state):
         # NO entry for "debater_b" -> should fail
         return {
             "debater_a": (None, None),
@@ -111,13 +111,13 @@ def test_resolver_missing_member_fails_at_init():
         }
 
     with pytest.raises(ValueError, match="omits members"):
-        _build(resolver=resolver)
+        _build(bindings_fn=bindings_fn)
 
 
-def test_resolver_stray_key_fails_at_init():
-    """Probe surfaces resolvers that return keys not in members."""
+def test_bindings_fn_stray_key_fails_at_init():
+    """Probe surfaces bindings fns that return keys not in members."""
 
-    def resolver(state):
+    def bindings_fn(state):
         return {
             "debater_a": (None, None),
             "debater_b": (MagicMock(), "opp"),
@@ -126,15 +126,15 @@ def test_resolver_stray_key_fails_at_init():
         }
 
     with pytest.raises(ValueError, match="not in members"):
-        _build(resolver=resolver)
+        _build(bindings_fn=bindings_fn)
 
 
-def test_resolver_returning_non_dict_fails_at_init():
-    def resolver(state):
+def test_bindings_fn_returning_non_dict_fails_at_init():
+    def bindings_fn(state):
         return [("debater_a", None)]  # wrong shape
 
     with pytest.raises(TypeError, match="must return a dict"):
-        _build(resolver=resolver)
+        _build(bindings_fn=bindings_fn)
 
 
 # ---------------------------------------------------------------------------
@@ -142,13 +142,13 @@ def test_resolver_returning_non_dict_fails_at_init():
 # ---------------------------------------------------------------------------
 
 
-def test_resolver_routes_by_learner_seat():
-    """resolve_agent(member, state) returns per-state overrides from the
-    resolver; learner_seat lookup flips (client, model) between a and b."""
+def test_bindings_fn_routes_by_learner_seat():
+    """get_agent_binding(member, state) returns per-state bindings from
+    the fn; learner_seat lookup flips (client, model) between a and b."""
     opp_client = MagicMock(name="opp_client")
     judge_client = MagicMock(name="judge_client")
 
-    def resolver(state):
+    def bindings_fn(state):
         seat = state["info"]["learner_seat"]
         opposite = "debater_b" if seat == "debater_a" else "debater_a"
         return {
@@ -157,27 +157,27 @@ def test_resolver_routes_by_learner_seat():
             "judge": (judge_client, "judge-model"),
         }
 
-    env = _build(resolver=resolver)
+    env = _build(bindings_fn=bindings_fn)
 
     state_a = State()
     state_a["input"] = {"info": {"learner_seat": "debater_a"}}
-    assert env.resolve_agent("debater_a", state_a) == (None, None)
-    assert env.resolve_agent("debater_b", state_a) == (opp_client, "opp-model")
-    assert env.resolve_agent("judge", state_a) == (judge_client, "judge-model")
+    assert env.get_agent_binding("debater_a", state_a) == (None, None)
+    assert env.get_agent_binding("debater_b", state_a) == (opp_client, "opp-model")
+    assert env.get_agent_binding("judge", state_a) == (judge_client, "judge-model")
 
     state_b = State()
     state_b["input"] = {"info": {"learner_seat": "debater_b"}}
-    assert env.resolve_agent("debater_a", state_b) == (opp_client, "opp-model")
-    assert env.resolve_agent("debater_b", state_b) == (None, None)
+    assert env.get_agent_binding("debater_a", state_b) == (opp_client, "opp-model")
+    assert env.get_agent_binding("debater_b", state_b) == (None, None)
 
 
-def test_resolver_missing_key_at_runtime_raises():
-    """If the resolver's output set changes under load (e.g. a dynamic
-    branch omits a member), _resolve_all catches it — the init probe
-    alone can't cover all state shapes."""
+def test_bindings_fn_missing_key_at_runtime_raises():
+    """If the fn's output set changes under load (e.g. a dynamic branch
+    omits a member), _get_bindings catches it — the init probe alone
+    can't cover all state shapes."""
     seen: dict[str, int] = {"calls": 0}
 
-    def resolver(state):
+    def bindings_fn(state):
         seen["calls"] += 1
         if state["info"].get("learner_seat") == "debater_b":
             # Oops — omit debater_a under this branch
@@ -188,37 +188,37 @@ def test_resolver_missing_key_at_runtime_raises():
             "judge": (MagicMock(), "j"),
         }
 
-    env = _build(resolver=resolver)  # init probe hits the good branch
+    env = _build(bindings_fn=bindings_fn)  # init probe hits the good branch
 
     bad_state = State()
     bad_state["input"] = {"info": {"learner_seat": "debater_b"}}
     with pytest.raises(ValueError, match="omitted members"):
-        env.resolve_agent("debater_a", bad_state)
+        env.get_agent_binding("debater_a", bad_state)
 
 
-def test_static_overrides_used_when_no_resolver():
-    """Falls back to self.agent_overrides when no resolver is set."""
+def test_static_bindings_used_when_no_fn():
+    """Falls back to self.agent_bindings when no bindings fn is set."""
     client = MagicMock(name="opp_client")
-    env = _build(agent_overrides={"debater_b": (client, "opp")})
+    env = _build(agent_bindings={"debater_b": (client, "opp")})
 
     state = State()
     state["input"] = {"info": {}}
-    assert env.resolve_agent("debater_a", state) == (None, None)
-    assert env.resolve_agent("debater_b", state) == (client, "opp")
-    assert env.resolve_agent("judge", state) == (None, None)
+    assert env.get_agent_binding("debater_a", state) == (None, None)
+    assert env.get_agent_binding("debater_b", state) == (client, "opp")
+    assert env.get_agent_binding("judge", state) == (None, None)
 
 
-def test_resolver_called_once_per_slot_not_per_agent():
+def test_bindings_fn_called_once_per_slot_not_per_agent():
     """Simultaneous slots resolve once per slot, even with N agents.
 
     Implementation detail test, but worth it: N-calls would silently
-    quadratic-up a dynamic resolver's cost, and on an external-service
-    resolver (e.g. one that consults a checkpoint registry) it's
-    observable slowdown."""
+    quadratic-up a dynamic bindings fn's cost, and on an external-service
+    fn (e.g. one that consults a checkpoint registry) it's observable
+    slowdown."""
     calls = {"n": 0}
     opp, judge_c = MagicMock(), MagicMock()
 
-    def resolver(state):
+    def bindings_fn(state):
         calls["n"] += 1
         return {
             "debater_a": (None, None),
@@ -226,21 +226,20 @@ def test_resolver_called_once_per_slot_not_per_agent():
             "judge": (judge_c, "j"),
         }
 
-    env = _build(resolver=resolver)
+    env = _build(bindings_fn=bindings_fn)
     init_calls = calls["n"]  # init probe consumed some calls
-    assert init_calls == 1  # probe hits resolver once
+    assert init_calls == 1  # probe hits fn once
 
     state = State()
     state["input"] = {"info": {"learner_seat": "debater_a"}}
 
-    # The runtime path is _resolve_all -> resolver(state) once per slot.
-    # Exercise via the public resolve_agent for each simultaneous agent:
-    # production _run_simultaneous_slot calls _resolve_all directly, so
-    # assert that the underlying helper is a single call.
-    env._resolve_all(state)
+    # The runtime path is _get_bindings -> bindings_fn(state) once per
+    # slot. Exercise the underlying helper directly, as production
+    # _run_simultaneous_slot does.
+    env._get_bindings(state)
     assert calls["n"] == init_calls + 1
 
-    env._resolve_all(state)
+    env._get_bindings(state)
     assert calls["n"] == init_calls + 2
 
 
@@ -250,10 +249,10 @@ def test_resolver_called_once_per_slot_not_per_agent():
 
 
 def test_debate_probe_seeds_learner_seat():
-    """DebateEnv's _build_probe_state overrides fill info.learner_seat so
-    resolvers that read it don't KeyError at init."""
+    """DebateEnv's _build_probe_state fills info.learner_seat so debate
+    bindings fns that read it don't KeyError at init."""
 
-    def resolver(state):
+    def bindings_fn(state):
         # KeyErrors if learner_seat isn't in info
         seat = state["info"]["learner_seat"]
         opposite = "debater_b" if seat == "debater_a" else "debater_a"
@@ -264,4 +263,4 @@ def test_debate_probe_seeds_learner_seat():
         }
 
     # If the probe didn't seed learner_seat, this would fail with KeyError.
-    _build(resolver=resolver)
+    _build(bindings_fn=bindings_fn)

@@ -44,22 +44,23 @@ All optional. Any omitted keys inherit the vf-eval top-level model/provider.
     schedule           list     override SCHEDULE; list of dicts      DEFAULT_SCHEDULE
     truth_member       str      member credited as winning seat        "debater_a"
 
-    # Self-play / OpenRouter overrides (each optional; mutually exclusive
-    # with the learner-vs-fixed kwargs below)
+    # Self-play / OpenRouter bindings (each optional; mutually exclusive
+    # with the external-opponent kwargs below)
     debater_model      str      slug for both debaters                 None (use default)
     judge_model        str      slug for the judge                     None (use default)
     debater_providers  list[str]  strict provider order for debaters   None (OR chooses)
     judge_providers    list[str]  strict provider order for the judge  None
     allow_fallbacks    bool     if true, OR may fall back to non-listed  False
 
-    # Learner-vs-fixed training (set opponent_model to enable)
-    opponent_model       str   frozen-opponent model id                None (self-play)
+    # External opponent (set opponent_model to enable)
+    opponent_model       str   external-opponent model id              None (self-play)
     opponent_base_url    str   OpenAI-compatible endpoint              None (api.openai.com)
     opponent_api_key_var str   env var holding opponent API key        "OPENAI_API_KEY"
     judge_base_url       str   judge endpoint (fallback: opponent)     None (api.openai.com)
     judge_api_key_var    str   env var holding judge API key           "OPENAI_API_KEY"
-    learner_seat_mode    str   bernoulli|round_robin|hash|fixed_a|_b   "bernoulli"
+    learner_seat_mode    str   bernoulli | round_robin | hash          "bernoulli"
     learner_seat_seed    int   RNG seed for bernoulli mode             0
+    pin_learner_seat     str   "a" | "b" — hard override (ablation)    None
 """
 
 from __future__ import annotations
@@ -100,7 +101,8 @@ def _format_row(
     rng: random.Random,
     *,
     example_idx: int,
-    learner_seat_mode: str | None,
+    seat_mode: str | None,
+    pin: str | None,
     seat_rng: random.Random | None,
 ) -> dict:
     correct = row["Correct Answer"].strip()
@@ -115,11 +117,12 @@ def _format_row(
     body = "\n".join(f"{L}) {c}" for L, c in zip(LETTERS, choices))
     example_id = str(row.get("Record ID") or f"gpqa_{rng.random():.10f}")
     info: dict[str, Any] = {}
-    if learner_seat_mode is not None:
-        info["learner_seat"] = _assign_learner_seat(
+    if seat_mode is not None:
+        info["learner_seat"] = _pick_learner_seat(
             example_idx=example_idx,
             example_id=example_id,
-            mode=learner_seat_mode,
+            mode=seat_mode,
+            pin=pin,
             rng=seat_rng,
         )
     return {
@@ -146,6 +149,7 @@ def _build_dataset(
     *,
     learner_seat_mode: str | None = None,
     learner_seat_seed: int = 0,
+    pin_learner_seat: str | None = None,
 ) -> Dataset:
     vf.ensure_keys(["HF_TOKEN"])
     raw = list(load_dataset("Idavidrein/gpqa", subset, split="train"))
@@ -163,7 +167,8 @@ def _build_dataset(
                 r,
                 rng,
                 example_idx=idx,
-                learner_seat_mode=learner_seat_mode,
+                seat_mode=learner_seat_mode,
+                pin=pin_learner_seat,
                 seat_rng=seat_rng,
             )
             for idx, r in enumerate(rows)
@@ -172,25 +177,38 @@ def _build_dataset(
 
 
 _SEATS = ("debater_a", "debater_b")
+_SEAT_BY_LETTER = {"a": "debater_a", "b": "debater_b"}
 
 
-def _assign_learner_seat(
+def _pick_learner_seat(
     *,
     example_idx: int,
     example_id: str,
     mode: str,
+    pin: str | None,
     rng: random.Random | None,
 ) -> str:
     """Pick the seat the learner occupies this episode.
 
-    bernoulli   — coin flip from ``rng`` (per-row, stateful; seed required
-                  for reproducibility)
+    ``pin`` is the hard override: when set, seat is ``debater_<pin>`` and
+    ``mode`` is ignored. Use it for ablations (e.g. "always side A")
+    and for curriculum experiments that vary which side the learner
+    defends.
+
+    Otherwise ``mode`` selects a seat-distribution mechanism. All three
+    try to balance seats across examples; they differ in determinism:
+
+    bernoulli   — coin flip from ``rng`` (stateful; requires seed for
+                  reproducibility)
     round_robin — ``example_idx % 2`` (deterministic, seed-free)
     hash        — ``hash(example_id) % 2`` (deterministic per example_id,
-                  stable under dataset reordering — best reproducibility)
-    fixed_a     — always ``debater_a``
-    fixed_b     — always ``debater_b``
+                  stable under dataset reordering)
     """
+    if pin is not None:
+        seat = _SEAT_BY_LETTER.get(pin)
+        if seat is None:
+            raise ValueError(f"pin_learner_seat must be 'a' or 'b', got {pin!r}")
+        return seat
     if mode == "bernoulli":
         if rng is None:
             raise ValueError("bernoulli mode requires a seat_rng")
@@ -199,13 +217,9 @@ def _assign_learner_seat(
         return _SEATS[example_idx % 2]
     if mode == "hash":
         return _SEATS[hash(example_id) % 2]
-    if mode == "fixed_a":
-        return _SEATS[0]
-    if mode == "fixed_b":
-        return _SEATS[1]
     raise ValueError(
         f"Unknown learner_seat_mode: {mode!r} "
-        f"(expected one of bernoulli, round_robin, hash, fixed_a, fixed_b)"
+        f"(expected one of bernoulli, round_robin, hash)"
     )
 
 
@@ -218,7 +232,7 @@ class _OpenRouterProviderClient(OpenAIChatCompletionsClient):
     """Injects OpenRouter's ``extra_body.provider`` preference on every
     ``get_response`` call. Provider prefs are per-request, so per-agent
     pinning requires one instance per distinct provider config — wired
-    through ``agent_overrides={...}``.
+    through ``agent_bindings={...}``.
     """
 
     def __init__(
@@ -267,7 +281,7 @@ def _make_openrouter_client(
 
 
 # ---------------------------------------------------------------------------
-# Learner-vs-fixed resolver
+# External-opponent bindings
 # ---------------------------------------------------------------------------
 
 
@@ -280,7 +294,7 @@ def _make_openai_compatible_client(
     api_key = os.environ.get(api_key_var)
     if not api_key:
         raise RuntimeError(
-            f"{api_key_var} is not set -- required for learner-vs-fixed "
+            f"{api_key_var} is not set -- required for external-opponent "
             f"routing in gpqa_debate"
         )
     return OpenAIChatCompletionsClient(
@@ -291,21 +305,22 @@ def _make_openai_compatible_client(
     )
 
 
-def _build_learner_vs_fixed_resolver(
+def _build_external_opponent_bindings(
     *,
     opp_client: Client,
     opp_model: str,
     judge_client: Client,
     judge_model: str,
 ) -> Callable[[State], dict[str, tuple[Client | None, str | None]]]:
-    """Closure that reads ``state.info.learner_seat`` per episode.
+    """Return an ``agent_bindings_fn`` that reads ``info.learner_seat``
+    per episode and binds:
 
-    Learner seat -> ``(None, None)`` so the rollout-default client/model
-    (the trainer's) is used. Opposite seat -> frozen opponent endpoint.
-    Judge -> frozen judge endpoint.
+      learner seat  -> (None, None)     rollout-default = trainer's client
+      opposite seat -> opp_client       external opponent endpoint
+      judge         -> judge_client     external judge endpoint
     """
 
-    def resolver(state: State) -> dict[str, tuple[Client | None, str | None]]:
+    def bindings_fn(state: State) -> dict[str, tuple[Client | None, str | None]]:
         learner_seat = state["info"]["learner_seat"]
         opposite_seat = "debater_b" if learner_seat == "debater_a" else "debater_a"
         return {
@@ -314,7 +329,7 @@ def _build_learner_vs_fixed_resolver(
             "judge": (judge_client, judge_model),
         }
 
-    return resolver
+    return bindings_fn
 
 
 # ---------------------------------------------------------------------------
@@ -336,7 +351,7 @@ def load_environment(
     debater_providers: list[str] | None = None,
     judge_providers: list[str] | None = None,
     allow_fallbacks: bool = False,
-    # Learner-vs-fixed path (mutually exclusive with the above)
+    # External-opponent path (mutually exclusive with the above)
     opponent_model: str | None = None,
     opponent_base_url: str | None = None,
     opponent_api_key_var: str = "OPENAI_API_KEY",
@@ -344,6 +359,7 @@ def load_environment(
     judge_api_key_var: str = "OPENAI_API_KEY",
     learner_seat_mode: str = "bernoulli",
     learner_seat_seed: int = 0,
+    pin_learner_seat: str | None = None,
     **extra: Any,
 ) -> DebateEnv:
     """vf-eval / training entry point. See module docstring for env_args schema.
@@ -355,29 +371,30 @@ def load_environment(
       seats share one client; no learner/opponent asymmetry. This is the
       vf-eval benchmarking path.
 
-    * **Learner-vs-fixed training** — set ``opponent_model`` (and
-      optionally ``judge_model``). A per-episode resolver sends the
+    * **External opponent** — set ``opponent_model`` (and optionally
+      ``judge_model``). A per-episode ``agent_bindings_fn`` sends the
       learner seat to the rollout-default (trainer) client and the
       opposite seat to a fixed OpenAI-compatible endpoint. Seat is
-      assigned from ``learner_seat_mode`` and stashed in each row's
-      ``info.learner_seat``.
+      assigned per-row by ``learner_seat_mode`` (or ``pin_learner_seat``
+      for ablations) and stashed in each row's ``info.learner_seat``.
     """
-    learner_vs_fixed = opponent_model is not None
+    external_opponent = opponent_model is not None
     self_play_overrides_set = any(
         x is not None for x in (debater_model, debater_providers, judge_providers)
     )
-    if learner_vs_fixed and self_play_overrides_set:
+    if external_opponent and self_play_overrides_set:
         raise ValueError(
             "gpqa_debate.load_environment: self-play kwargs "
             "(debater_model, debater_providers, judge_providers) are "
-            "mutually exclusive with learner-vs-fixed (opponent_model). "
+            "mutually exclusive with external-opponent (opponent_model). "
             "Pick one mode."
         )
 
-    # Only stamp info.learner_seat when the resolver is going to read it.
-    # In self-play mode the info dict stays empty -- no need to perturb
-    # eval runs that never consult the key.
-    seat_mode_for_dataset = learner_seat_mode if learner_vs_fixed else None
+    # Only stamp info.learner_seat when the bindings fn is going to read
+    # it. In self-play mode the info dict stays empty -- no need to
+    # perturb eval runs that never consult the key.
+    seat_mode_for_dataset = learner_seat_mode if external_opponent else None
+    pin_for_dataset = pin_learner_seat if external_opponent else None
 
     def build_dataset() -> Dataset:
         return _build_dataset(
@@ -386,6 +403,7 @@ def load_environment(
             seed,
             learner_seat_mode=seat_mode_for_dataset,
             learner_seat_seed=learner_seat_seed,
+            pin_learner_seat=pin_for_dataset,
         )
 
     def build_eval_dataset() -> Dataset:
@@ -397,19 +415,20 @@ def load_environment(
             seed + 1,
             learner_seat_mode=seat_mode_for_dataset,
             learner_seat_seed=learner_seat_seed + 1,
+            pin_learner_seat=pin_for_dataset,
         )
 
-    if learner_vs_fixed:
+    if external_opponent:
         opp_client = _make_openai_compatible_client(
             opponent_base_url, opponent_api_key_var
         )
         judge_client = _make_openai_compatible_client(judge_base_url, judge_api_key_var)
-        resolver = _build_learner_vs_fixed_resolver(
+        bindings_fn = _build_external_opponent_bindings(
             opp_client=opp_client,
             opp_model=opponent_model,
             judge_client=judge_client,
             # Fall back to opponent_model if no judge_model given -- common
-            # case is one endpoint serving both frozen roles.
+            # case is one endpoint serving both non-learner roles.
             judge_model=judge_model or opponent_model,
         )
         return _debate_load_env(
@@ -417,16 +436,16 @@ def load_environment(
             members=["debater_a", "debater_b", "judge"],
             truth_member=truth_member,
             prompts_ref=prompts_ref,
-            agent_overrides_resolver=resolver,
+            agent_bindings_fn=bindings_fn,
             dataset=build_dataset,
             eval_dataset=build_eval_dataset,
             **extra,
         )
 
-    # Self-play / OpenRouter path -- build static agent_overrides only for
-    # the dimensions the caller specified. If no per-agent overrides are
+    # Self-play / OpenRouter path -- build static agent_bindings only for
+    # the dimensions the caller specified. If no per-agent bindings are
     # given, vf-eval's top-level (model, client) flows through unchanged.
-    agent_overrides: dict[str, tuple] = {}
+    agent_bindings: dict[str, tuple] = {}
 
     if debater_model is not None or debater_providers is not None:
         debater_client = (
@@ -435,7 +454,7 @@ def load_environment(
             else None
         )
         for mid in ("debater_a", "debater_b"):
-            agent_overrides[mid] = (debater_client, debater_model)
+            agent_bindings[mid] = (debater_client, debater_model)
 
     if judge_model is not None or judge_providers is not None:
         judge_client = (
@@ -443,14 +462,14 @@ def load_environment(
             if judge_providers is not None
             else None
         )
-        agent_overrides["judge"] = (judge_client, judge_model)
+        agent_bindings["judge"] = (judge_client, judge_model)
 
     return _debate_load_env(
         schedule_slots=schedule or DEFAULT_SCHEDULE,
         members=["debater_a", "debater_b", "judge"],
         truth_member=truth_member,
         prompts_ref=prompts_ref,
-        agent_overrides=agent_overrides or None,
+        agent_bindings=agent_bindings or None,
         dataset=build_dataset,
         eval_dataset=build_eval_dataset,
         **extra,
