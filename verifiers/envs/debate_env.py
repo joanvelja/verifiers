@@ -540,6 +540,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         prompts=prompts,
         members=kwargs.pop("members"),
         agent_overrides=kwargs.pop("agent_overrides", None),
+        agent_overrides_resolver=kwargs.pop("agent_overrides_resolver", None),
         rubric=rubric,
         **kwargs,
     )
