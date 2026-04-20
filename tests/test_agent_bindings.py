@@ -171,6 +171,32 @@ def test_bindings_fn_routes_by_learner_seat():
     assert env.get_agent_binding("debater_b", state_b) == (None, None)
 
 
+def test_bindings_fn_returning_non_dict_at_runtime_raises():
+    """A dynamic branch that returns a non-dict iterable with correct
+    member names would pass a naive membership check (since ``set(list)``
+    works) but crash opaquely at the ``.get`` call later. _get_bindings
+    re-checks shape at runtime to surface a clear TypeError."""
+
+    def bindings_fn(state):
+        seat = state["info"].get("learner_seat")
+        if seat == "debater_b":
+            # Buggy branch: returns a list that happens to contain the
+            # right member names — passes set-difference but breaks .get.
+            return ["debater_a", "debater_b", "judge"]
+        return {
+            "debater_a": (None, None),
+            "debater_b": (MagicMock(), "opp"),
+            "judge": (MagicMock(), "j"),
+        }
+
+    env = _build(bindings_fn=bindings_fn)  # init probe hits the dict branch
+
+    bad_state = State()
+    bad_state["input"] = {"info": {"learner_seat": "debater_b"}}
+    with pytest.raises(TypeError, match="must return a dict"):
+        env.get_agent_binding("debater_a", bad_state)
+
+
 def test_bindings_fn_missing_key_at_runtime_raises():
     """If the fn's output set changes under load (e.g. a dynamic branch
     omits a member), _get_bindings catches it — the init probe alone

@@ -195,13 +195,17 @@ class MultiAgentEnv(vf.Environment):
         """Return the full (member_id -> (client, model)) binding map.
 
         Either the static ``agent_bindings`` dict or a fresh call to the
-        bindings function. Validates coverage at runtime too -- the init
-        probe can't catch a dynamic fn that returns different keys for
-        different states.
+        bindings function. Validates coverage + shape at runtime too --
+        the init probe can't catch a dynamic fn that returns different
+        keys or a different shape for different states.
         """
         if self._agent_bindings_fn is None:
             return self.agent_bindings
         bindings = self._agent_bindings_fn(state)
+        if not isinstance(bindings, dict):
+            raise TypeError(
+                f"agent_bindings_fn must return a dict, got {type(bindings).__name__}"
+            )
         missing = set(self.members) - set(bindings)
         if missing:
             raise ValueError(
