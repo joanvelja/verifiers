@@ -46,12 +46,10 @@ env_args
 
 from __future__ import annotations
 
-import os
 import random
 from typing import Any
 
 from datasets import Dataset, load_dataset
-from openai import AsyncOpenAI
 
 import verifiers as vf
 from verifiers.clients.openai_chat_completions_client import (
@@ -59,6 +57,7 @@ from verifiers.clients.openai_chat_completions_client import (
 )
 from verifiers.parsers.xml_parser import XMLParser
 from verifiers.rubrics.rubric import Rubric
+from verifiers.types import ClientConfig
 
 LETTERS = ("A", "B", "C", "D")
 
@@ -118,6 +117,7 @@ def _format_row(row: dict, rng: random.Random, p_correct: float) -> dict:
 
 
 def _build_dataset(subset: str, n: int, seed: int, p_correct: float) -> Dataset:
+    vf.ensure_keys(["HF_TOKEN"])
     raw = list(load_dataset("Idavidrein/gpqa", subset, split="train"))
     rng = random.Random(seed)
     rows = raw if n == -1 else raw[:n]
@@ -174,15 +174,12 @@ class _ConsultancyRubric(Rubric):
         question = question.split("You are a consultant.")[0].rstrip()
         argument = self.parser.parse_answer(completion) or ""
         judge_msg = _JUDGE_PROMPT.format(question=question, response=argument)
-        # Direct chat completion — the rubric pattern from continuation_quality.
-        client = self.judge_client.openai_client  # AsyncOpenAI
-        resp = await client.chat.completions.create(
+        response = await self.judge_client.get_response(
+            prompt=[{"role": "user", "content": judge_msg}],
             model=self.judge_model,
-            messages=[{"role": "user", "content": judge_msg}],
-            temperature=0.0,
-            max_tokens=4,
+            sampling_args={"temperature": 0.0, "max_tokens": 4},
         )
-        text = (resp.choices[0].message.content or "").strip().upper()
+        text = str(response.message.content or "").strip().upper()
         for ch in text:
             if ch in LETTERS:
                 return ch
@@ -246,9 +243,9 @@ def load_environment(
         return _build_dataset(subset, num_eval_examples, seed + 1, assignment_balance)
 
     judge_client = OpenAIChatCompletionsClient(
-        AsyncOpenAI(
-            base_url=judge_base_url,
-            api_key=os.getenv(judge_api_key_var, ""),
+        ClientConfig(
+            api_key_var=judge_api_key_var,
+            api_base_url=judge_base_url,
         )
     )
     rubric = _ConsultancyRubric(

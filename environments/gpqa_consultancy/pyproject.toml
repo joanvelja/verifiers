@@ -1,13 +1,13 @@
 [project]
-name = "gpqa_consultancy"
+name = "gpqa-consultancy"
 version = "0.1.0"
 description = "GPQA under the Khan-et-al-2024 consultancy protocol (single agent + LLM judge)"
+readme = "README.md"
 tags = ["gpqa", "consultancy", "single-agent", "judge", "eval"]
 requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.12",
     "datasets>=2.14",
-    "openai>=1.30",
 ]
 
 [build-system]
@@ -15,7 +15,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["gpqa_consultancy.py", "pyproject.toml"]
+include = ["gpqa_consultancy.py", "pyproject.toml", "README.md"]
 
 [tool.verifiers.eval]
 num_examples = 198

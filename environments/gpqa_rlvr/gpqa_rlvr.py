@@ -66,6 +66,7 @@ def _format_row(row: dict, rng: random.Random) -> dict:
 
 
 def _build_dataset(subset: str, n: int, seed: int) -> Dataset:
+    vf.ensure_keys(["HF_TOKEN"])
     raw = list(load_dataset("Idavidrein/gpqa", subset, split="train"))
     rng = random.Random(seed)
     rows = raw if n == -1 else raw[:n]
