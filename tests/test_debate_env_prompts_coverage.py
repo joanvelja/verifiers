@@ -5,8 +5,8 @@ The cross-check rejects packs that don't supply templates for every
 
   * system missing for a scheduled member  → would KeyError on first turn
   * question missing for a scheduled member → would silently render no Q
-  * user[member][phase] missing AND no    → would silently render no
-    'default' fallback                       instruction
+  * no effective instruction source       → would silently render no
+    (user/default, think, or fields)          instruction
 
 These are caught at env.__init__ so the operator sees the error before
 any rollout completes (~minutes saved, vs hours-of-GPU-then-confusion).
@@ -22,6 +22,7 @@ import jinja2
 import jinja2.sandbox
 import pytest
 
+from verifiers.envs.debate.fields import FieldSpec
 from verifiers.envs.debate.prompts import DebatePrompts
 from verifiers.envs.debate_env import DebateEnv
 from verifiers.envs.multi_agent_kernel import StaticSchedule, TurnSlot
@@ -45,6 +46,8 @@ def _pack(
     system: dict[str, str] | None = None,
     question: dict[str, str] | None = None,
     user: dict[str, dict[str, str]] | None = None,
+    fields: dict[str, dict[str, dict[str, FieldSpec]]] | None = None,
+    think_visibility: dict[str, str] | None = None,
 ) -> DebatePrompts:
     """Build a minimal DebatePrompts from raw template strings.
 
@@ -62,6 +65,10 @@ def _pack(
             "debater_b": {"propose": "argue", "critique": "rebut"},
             "judge": {"final": "decide"},
         }
+    if fields is None:
+        fields = {}
+    if think_visibility is None:
+        think_visibility = {}
     return DebatePrompts(
         system={k: _je.from_string(v) for k, v in system.items()},
         user={
@@ -69,8 +76,8 @@ def _pack(
             for m, phases in user.items()
         },
         question={k: _je.from_string(v) for k, v in question.items()},
-        fields={},
-        think_visibility={},
+        fields=fields,
+        think_visibility=think_visibility,
         think_tag="thinking",
         prefill={},
         opponent_wrap=None,
@@ -127,6 +134,34 @@ def test_user_default_fallback_passes():
     _build(_pack(user=user))  # no exception — default covers propose+critique
 
 
+def test_think_instruction_covers_missing_user_template():
+    """A turn with no user template can still have an effective instruction
+    when think_visibility asks DebatePrompts.render_instruction to emit a
+    think-tag instruction.
+    """
+    user = {
+        "debater_a": {},  # propose/critique covered by think instruction
+        "debater_b": {"propose": "argue", "critique": "rebut"},
+        "judge": {"final": "decide"},
+    }
+    _build(_pack(user=user, think_visibility={"debater_a": "private"}))
+
+
+def test_field_instruction_covers_missing_user_template():
+    """A turn with no user template can still be renderable when field specs
+    produce XML format instructions for that phase.
+    """
+    user = {
+        "debater_a": {"propose": "argue", "critique": "rebut"},
+        "debater_b": {"propose": "argue", "critique": "rebut"},
+        "judge": {},  # final covered by fields
+    }
+    fields = {
+        "judge": {"final": {"decision": FieldSpec(type=str, description="winner id")}}
+    }
+    _build(_pack(user=user, fields=fields))
+
+
 # ---------------------------------------------------------------------------
 # Loud-failure mode: missing system
 # ---------------------------------------------------------------------------
@@ -179,7 +214,7 @@ def test_missing_user_phase_no_default_raises():
     with pytest.raises(ValueError) as ei:
         _build(_pack(user=user))
     msg = str(ei.value)
-    assert "user['debater_a']" in msg
+    assert "instruction['debater_a']" in msg
     assert "'critique'" in msg
     assert "no 'default' fallback" in msg
     assert "silent" in msg.lower()
@@ -196,7 +231,7 @@ def test_missing_user_groups_phases_per_member():
         _build(_pack(user=user))
     msg = str(ei.value)
     # Same member, both phases listed together.
-    assert "user['debater_a']" in msg
+    assert "instruction['debater_a']" in msg
     assert "'critique'" in msg
     assert "'propose'" in msg
 
@@ -221,7 +256,7 @@ def test_combined_failures_all_reported():
     msg = str(ei.value)
     assert "system: missing" in msg
     assert "question: missing" in msg
-    assert "user['debater_a']" in msg
+    assert "instruction['debater_a']" in msg
     # Sanity: the pack-source-ref is mentioned for debugging.
     assert "<test>" in msg
     # Sanity: lists what the pack DOES have to help the operator.
@@ -330,5 +365,5 @@ def test_consultancy_shaped_schedule_missing_judge_final_raises():
             dataset=lambda: None,
         )
     msg = str(ei.value)
-    assert "user['judge']" in msg
+    assert "instruction['judge']" in msg
     assert "'final'" in msg
