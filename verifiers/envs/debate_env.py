@@ -15,7 +15,7 @@ inherited from :class:`MultiAgentEnv`.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from verifiers.clients import Client
 from verifiers.envs.debate.parsing import extract_fields
@@ -65,13 +65,18 @@ class DebateEnv(MultiAgentEnv):
         prompts: DebatePrompts,
         members: list[str],
         *,
-        agent_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
+        agent_bindings: dict[str, tuple[Client | None, str | None]] | None = None,
+        agent_bindings_fn: Callable[
+            [State], dict[str, tuple[Client | None, str | None]]
+        ]
+        | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
             schedule=schedule,
             members=members,
-            agent_overrides=agent_overrides,
+            agent_bindings=agent_bindings,
+            agent_bindings_fn=agent_bindings_fn,
             think_tag=prompts.think_tag,
             **kwargs,
         )
@@ -120,6 +125,23 @@ class DebateEnv(MultiAgentEnv):
             self._validate_prompts_cover_schedule(prompts, schedule)
 
         self.prompts = prompts
+
+    def _build_probe_state(self) -> State:
+        """Seed ``info.learner_seat`` with a valid default so debate
+        binding functions that branch on it don't KeyError during the
+        init probe.
+
+        A typical debate bindings fn looks like ``info.learner_seat`` ->
+        ``(None, None)`` for the learner seat, ``(opp_client, opp_model)``
+        for the opposite seat. The probe defaults to ``members[0]`` as
+        learner; functions that inspect further info keys should use
+        ``.get(..., default)`` -- the contract is that the fn must
+        cover every member on any well-formed state.
+        """
+        probe = super()._build_probe_state()
+        info = probe["input"]["info"]
+        info.setdefault("learner_seat", self.members[0])
+        return probe
 
     @staticmethod
     def _validate_prompts_cover_schedule(
@@ -481,7 +503,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
     Required: schedule_slots, members, truth_member.
     Prompt source (exactly one): ``prompts_ref`` (str, registry lookup)
     or ``prompts`` (already-built DebatePrompts).
-    Optional: agent_overrides, judge_client OR
+    Optional: agent_bindings / agent_bindings_fn, judge_client OR
     (judge_api_key + judge_base_url + judge_max_retries), judge_model,
     dataset/eval_dataset.
     """
@@ -518,7 +540,8 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         schedule=schedule,
         prompts=prompts,
         members=kwargs.pop("members"),
-        agent_overrides=kwargs.pop("agent_overrides", None),
+        agent_bindings=kwargs.pop("agent_bindings", None),
+        agent_bindings_fn=kwargs.pop("agent_bindings_fn", None),
         rubric=rubric,
         **kwargs,
     )
