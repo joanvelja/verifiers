@@ -307,17 +307,26 @@ def _make_openai_compatible_client(
 
 def _build_external_opponent_bindings(
     *,
-    opp_client: Client,
+    opp_client: Client | None,
     opp_model: str,
-    judge_client: Client,
+    judge_client: Client | None,
     judge_model: str,
 ) -> Callable[[State], dict[str, tuple[Client | None, str | None]]]:
     """Return an ``agent_bindings_fn`` that reads ``info.learner_seat``
     per episode and binds:
 
-      learner seat  -> (None, None)     rollout-default = trainer's client
-      opposite seat -> opp_client       external opponent endpoint
-      judge         -> judge_client     external judge endpoint
+      learner seat  -> (None, None)           rollout-default = trainer's client
+      opposite seat -> (opp_client,   opp_model)
+      judge         -> (judge_client, judge_model)
+
+    ``opp_client`` / ``judge_client`` may be ``None``, in which case the
+    rollout-default client is reused for that seat -- only the model
+    string differs. That enables the shared-vLLM / LoRA-disabled
+    opponent pattern: launch vLLM with ``--enable-lora --lora-modules
+    learner_adapter=<path>``, have the trainer sync the adapter, route
+    the learner seat to the adapter alias (via rollout-default) and the
+    opposite seat to the base model name (same client, same server, no
+    adapter applied).
     """
 
     def bindings_fn(state: State) -> dict[str, tuple[Client | None, str | None]]:
@@ -419,10 +428,22 @@ def load_environment(
         )
 
     if external_opponent:
-        opp_client = _make_openai_compatible_client(
-            opponent_base_url, opponent_api_key_var
+        # ``opp_client=None`` means "reuse the rollout-default client"
+        # (same vLLM server as the learner). Handy for the LoRA-self
+        # setup: trainer serves learner under a LoRA alias, opponent
+        # routes to the base model name on the same server. When an
+        # opponent_base_url is given, we build a dedicated client that
+        # talks to an external endpoint instead.
+        opp_client = (
+            _make_openai_compatible_client(opponent_base_url, opponent_api_key_var)
+            if opponent_base_url is not None
+            else None
         )
-        judge_client = _make_openai_compatible_client(judge_base_url, judge_api_key_var)
+        judge_client = (
+            _make_openai_compatible_client(judge_base_url, judge_api_key_var)
+            if judge_base_url is not None
+            else None
+        )
         bindings_fn = _build_external_opponent_bindings(
             opp_client=opp_client,
             opp_model=opponent_model,
