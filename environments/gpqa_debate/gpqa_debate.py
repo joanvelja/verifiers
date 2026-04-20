@@ -65,6 +65,7 @@ All optional. Any omitted keys inherit the vf-eval top-level model/provider.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import random
 from typing import Any, Callable
@@ -216,7 +217,11 @@ def _pick_learner_seat(
     if mode == "round_robin":
         return _SEATS[example_idx % 2]
     if mode == "hash":
-        return _SEATS[hash(example_id) % 2]
+        # Python's built-in hash() is process-randomized (PYTHONHASHSEED),
+        # which defeats this mode's "deterministic / stable across runs"
+        # contract. blake2b is stable and fast.
+        digest = hashlib.blake2b(example_id.encode("utf-8"), digest_size=1).digest()
+        return _SEATS[digest[0] & 1]
     raise ValueError(
         f"Unknown learner_seat_mode: {mode!r} "
         f"(expected one of bernoulli, round_robin, hash)"
@@ -327,6 +332,11 @@ def _build_external_opponent_bindings(
     the learner seat to the adapter alias (via rollout-default) and the
     opposite seat to the base model name (same client, same server, no
     adapter applied).
+
+    The caller is responsible for the judge_client fallback policy --
+    typically "inherit opponent's client when no explicit judge
+    endpoint is set" so the judge lands on the frozen endpoint rather
+    than silently routing through the learner's.
     """
 
     def bindings_fn(state: State) -> dict[str, tuple[Client | None, str | None]]:
@@ -428,22 +438,32 @@ def load_environment(
         )
 
     if external_opponent:
-        # ``opp_client=None`` means "reuse the rollout-default client"
-        # (same vLLM server as the learner). Handy for the LoRA-self
-        # setup: trainer serves learner under a LoRA alias, opponent
-        # routes to the base model name on the same server. When an
-        # opponent_base_url is given, we build a dedicated client that
-        # talks to an external endpoint instead.
+        # Client routing is three-way:
+        #   * base_url set      -> dedicated client for that endpoint
+        #   * base_url is None  -> None (= reuse rollout-default client,
+        #                          i.e. same vLLM as the learner, handy
+        #                          for the LoRA-self setup)
+        # Judge gets one extra fallback on top: if no judge endpoint was
+        # given but an opponent endpoint was, reuse the opponent client --
+        # the common-case deployment is one frozen endpoint serving both
+        # non-learner roles, which is exactly what the judge_model fallback
+        # to opponent_model encodes. Without this tier, judge traffic
+        # would silently route to the learner's endpoint whenever the
+        # caller relied on the documented "judge falls back to opponent"
+        # path.
         opp_client = (
             _make_openai_compatible_client(opponent_base_url, opponent_api_key_var)
             if opponent_base_url is not None
             else None
         )
-        judge_client = (
-            _make_openai_compatible_client(judge_base_url, judge_api_key_var)
-            if judge_base_url is not None
-            else None
-        )
+        if judge_base_url is not None:
+            judge_client = _make_openai_compatible_client(
+                judge_base_url, judge_api_key_var
+            )
+        elif opponent_base_url is not None:
+            judge_client = opp_client
+        else:
+            judge_client = None
         bindings_fn = _build_external_opponent_bindings(
             opp_client=opp_client,
             opp_model=opponent_model,
