@@ -107,7 +107,93 @@ class DebateEnv(MultiAgentEnv):
                     f"  in schedule only : {sorted(slot_agents - member_set)}"
                 )
 
+        # Cross-check 3: schedule × prompts coverage. Every (member_id,
+        # phase) in the schedule needs a renderable prompt. Two failure
+        # modes if not — the LOUD one (system missing → KeyError on the
+        # first turn, ~minutes of wasted compute) and the SILENT one
+        # (question/effective instruction missing → empty prompt, model
+        # gets a malformed turn with no upstream signal). Catch both at
+        # init so the operator hits the error before a rollout completes.
+        # Dynamic SlotProgram implementations are exempt — their agent ×
+        # phase set isn't enumerable at init time.
+        if isinstance(schedule, StaticSchedule):
+            self._validate_prompts_cover_schedule(prompts, schedule)
+
         self.prompts = prompts
+
+    @staticmethod
+    def _validate_prompts_cover_schedule(
+        prompts: DebatePrompts, schedule: StaticSchedule
+    ) -> None:
+        """Fail loud at init if the prompts pack doesn't cover every
+        (member_id, phase) pair the schedule will hit. Lookups mirror
+        DebatePrompts.render_{system,question,instruction} so the check
+        rejects exactly what would silently break or KeyError later.
+        """
+        missing_system: set[str] = set()
+        missing_question: set[str] = set()
+        # (member_id, phase) pairs with no effective instruction source:
+        # no user template/default, no think instruction, no field instruction.
+        missing_instruction: set[tuple[str, str]] = set()
+        for slot in schedule._slots:
+            for member_id in slot.agents:
+                phase = slot.phase
+                if member_id not in prompts.system:
+                    missing_system.add(member_id)
+                if member_id not in prompts.question:
+                    missing_question.add(member_id)
+                user_block = prompts.user.get(member_id, {})
+                has_user_instruction = phase in user_block or "default" in user_block
+                has_think_instruction = (
+                    prompts.think_visibility.get(member_id, "disabled") != "disabled"
+                )
+                has_field_instruction = bool(prompts.get_field_specs(member_id, phase))
+                if not (
+                    has_user_instruction
+                    or has_think_instruction
+                    or has_field_instruction
+                ):
+                    missing_instruction.add((member_id, phase))
+        if not (missing_system or missing_question or missing_instruction):
+            return
+
+        lines = [
+            f"DebateEnv prompts pack does not cover the schedule "
+            f"(pack source: {prompts.source_ref!r}).",
+        ]
+        if missing_system:
+            lines.append(
+                f"  system: missing for member(s) {sorted(missing_system)} "
+                f"— DebatePrompts.render_system would KeyError on the "
+                f"first turn for any of these"
+            )
+        if missing_question:
+            lines.append(
+                f"  question: missing for member(s) "
+                f"{sorted(missing_question)} — turn would render with "
+                f"NO question (silent failure: model gets prompt with "
+                f"system + transcript only)"
+            )
+        if missing_instruction:
+            by_member: dict[str, list[str]] = {}
+            for m, p in missing_instruction:
+                by_member.setdefault(m, []).append(p)
+            for m, phases in sorted(by_member.items()):
+                lines.append(
+                    f"  instruction[{m!r}]: missing phase(s) "
+                    f"{sorted(set(phases))} — no user phase template, no "
+                    f"'default' fallback, no think instruction, and no "
+                    f"field instruction (silent failure: model has to infer "
+                    f"the task from system+transcript)"
+                )
+        lines.append(f"  pack has system keys: {sorted(prompts.system)}")
+        lines.append(f"  pack has user keys:   {sorted(prompts.user)}")
+        lines.append(
+            "Add the missing templates to the YAML pack, or set a "
+            "'default' phase block under the relevant user[member_id] "
+            "or add an equivalent think/field instruction source."
+        )
+        raise ValueError("\n".join(lines))
 
     def _member_round_count(self, member_id: str) -> int:
         """Count schedule slots where ``member_id`` participates as agent.
