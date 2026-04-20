@@ -139,6 +139,7 @@ def test_gpqa_debate_built_wheel_imports_and_loads_from_tmp_venv():
         smoke = subprocess.run(
             [
                 str(python),
+                "-I",
                 "-c",
                 (
                     "import gpqa_debate; "
@@ -149,6 +150,7 @@ def test_gpqa_debate_built_wheel_imports_and_loads_from_tmp_venv():
             ],
             capture_output=True,
             text=True,
+            cwd=tmp_dir,
             timeout=LOAD_TIMEOUT,
         )
         assert smoke.returncode == 0, (
