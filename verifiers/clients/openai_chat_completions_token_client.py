@@ -11,6 +11,7 @@ from openai.types.chat.chat_completion_message_function_tool_call_param import (
     Function,
 )
 
+from verifiers.api_profile import ApiProfile
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
     OpenAIChatMessage,
@@ -64,7 +65,15 @@ class TokenizeResponse(BaseModel):
 
 
 class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
-    """Wrapper for custom vLLM route /v1/chat/completions/tokens via AsyncOpenAI client."""
+    """Wrapper for custom vLLM route /v1/chat/completions/tokens via AsyncOpenAI client.
+
+    Pinned to ``ApiProfile.VLLM_PERMISSIVE`` — this subclass exists solely
+    for vLLM's extended /chat/completions/tokens route, so vLLM-only kwargs
+    (top_k, min_p, cache_salt, return_token_ids) must pass through. The
+    plain-client parent's strip logic is a no-op under this profile.
+    """
+
+    _default_profile: ApiProfile = ApiProfile.VLLM_PERMISSIVE
 
     @property
     def token_client(self) -> AsyncOpenAI:

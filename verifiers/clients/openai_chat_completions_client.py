@@ -35,6 +35,10 @@ from openai.types.chat.chat_completion_user_message_param import (
 )
 from openai.types.shared_params import FunctionDefinition
 
+from verifiers.api_profile import (
+    ApiProfile,
+    filter_sampling_args_for_profile,
+)
 from verifiers.clients.client import Client
 from verifiers.errors import (
     EmptyModelResponseError,
@@ -150,10 +154,37 @@ class OpenAIChatCompletionsClient(
         OpenAITool,
     ]
 ):
-    """Wrapper for Chat Completions API via AsyncOpenAI client."""
+    """Wrapper for Chat Completions API via AsyncOpenAI client.
+
+    Defaults to ``ApiProfile.OPENAI_STRICT`` — vLLM-only kwargs (top_k,
+    min_p, cache_salt, return_token_ids, repetition_penalty, min_tokens,
+    best_of) are stripped before the outbound request. When wrapping a
+    vLLM server through this plain client, pass
+    ``profile=ApiProfile.VLLM_PERMISSIVE`` at construction (or set it on
+    ``ClientConfig.profile``) to opt back in.
+    """
+
+    _default_profile: ApiProfile = ApiProfile.OPENAI_STRICT
+
+    # Tracks stripped keys already warned about so a single misconfig
+    # surfaces once per client lifetime instead of spamming per request.
+    _warned_stripped_keys: frozenset[str] = frozenset()
 
     def setup_client(self, config: ClientConfig) -> AsyncOpenAI:
         return setup_openai_client(config)
+
+    def _warn_stripped_keys_once(self, stripped: frozenset[str]) -> None:
+        new = stripped - self._warned_stripped_keys
+        if not new:
+            return
+        self._warned_stripped_keys = self._warned_stripped_keys | new
+        self.logger.warning(
+            "Stripping vLLM-only sampling kwargs for profile=%s: %s. "
+            "If this client points at a vLLM server, pass "
+            "profile=ApiProfile.VLLM_PERMISSIVE at construction to keep them.",
+            self._profile.value,
+            sorted(new),
+        )
 
     async def close(self) -> None:
         await self.client.close()
@@ -252,7 +283,12 @@ class OpenAIChatCompletionsClient(
             sampling_args = dict(sampling_args)
             if "max_tokens" in sampling_args:
                 sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
-            return {k: v for k, v in sampling_args.items() if v is not None}
+            filtered, stripped = filter_sampling_args_for_profile(
+                sampling_args, self._profile
+            )
+            if stripped:
+                self._warn_stripped_keys_once(stripped)
+            return {k: v for k, v in filtered.items() if v is not None}
 
         # Audio inputs require text-only modality unless explicitly requested.
         has_audio = False

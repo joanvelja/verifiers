@@ -14,6 +14,8 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from verifiers.api_profile import ApiProfile  # runtime: ClientConfig uses it
+
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
     from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
@@ -592,6 +594,12 @@ class ClientConfig(BaseModel):
 
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
+    # Endpoint contract the client should enforce on its outbound requests.
+    # ``None`` = let the client subclass pick its default profile
+    # (plain chat/completions → OPENAI_STRICT, token client → VLLM_PERMISSIVE).
+    # Override when wrapping a vLLM server via the plain client (set
+    # ``VLLM_PERMISSIVE`` to opt back in to top_k/min_p/cache_salt/etc.).
+    profile: ApiProfile | None = None
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)
