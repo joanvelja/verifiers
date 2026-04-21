@@ -6,7 +6,10 @@ readme = "README.md"
 tags = ["gpqa", "debate", "multi-agent", "eval"]
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers @ git+https://github.com/joanvelja/verifiers.git@44f875e1560669226a579dcdbdae749d333695a1",
+    # Loose pin: the consumer (e.g. prime-rl) pins the verifiers commit.
+    # Commit-pinning the parent package from a nested sub-package creates a
+    # circular dependency on its own SHA and drifts behind main.
+    "verifiers",
     "datasets>=2.14",
 ]
 
@@ -19,6 +22,12 @@ include = ["gpqa_debate.py", "pyproject.toml", "README.md"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+# Point the unpinned `verifiers` dep at the joanvelja fork's main ref.
+# rev intentionally tracks verifiers/main HEAD; consumers (e.g. prime-rl)
+# may override this via their own [tool.uv.sources].
+[tool.uv.sources]
+verifiers = { git = "https://github.com/joanvelja/verifiers.git", branch = "main" }
 
 [tool.verifiers.eval]
 num_examples = 50
