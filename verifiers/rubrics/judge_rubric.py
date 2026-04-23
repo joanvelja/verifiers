@@ -31,7 +31,6 @@ class JudgeRubric(Rubric):
     def __init__(
         self,
         parser: Parser | None = None,
-        parallelize_scoring: bool = False,
         judge_client: Client | None = None,
         judge_model: str = "gpt-4.1-nano",
         judge_sampling_args: dict[str, Any] | None = None,
