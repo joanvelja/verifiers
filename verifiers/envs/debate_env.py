@@ -559,8 +559,6 @@ def _resolve_prompts_arg(
     if prompts is not None and prompts_ref is not None:
         raise ValueError("Provide exactly one of 'prompts_ref' or 'prompts'")
     if prompts is not None:
-        if not isinstance(prompts, DebatePrompts):
-            raise TypeError(f"Expected DebatePrompts, got {type(prompts).__name__}")
         return prompts
     if prompts_ref is not None:
         return resolve_prompts(prompts_ref)

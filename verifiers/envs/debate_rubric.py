@@ -183,11 +183,6 @@ class DebateRubric(MultiAgentRubric):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        if judge_client is not None and not isinstance(judge_client, Client):
-            raise TypeError(
-                f"judge_client must be a vf.Client subclass, "
-                f"got {type(judge_client).__name__}"
-            )
         self.truth_member = truth_member
         self.members = members
         self.prompts = prompts
