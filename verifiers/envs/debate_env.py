@@ -570,22 +570,19 @@ def _build_judge_client(
     api_key: str | None,
     base_url: str | None,
     max_retries: int,
-) -> Any:
+) -> Any | None:
     """Return a judge client from an explicit object OR connection kwargs.
 
-    DebateRubric production rollouts always need a judge — if the caller
-    provides neither an explicit client nor api_key/base_url, raise.
-    (Tests that instantiate DebateRubric directly can still pass
-    ``judge_client=None``; this validation lives on the production entry.)
+    Pure construction — no validation. Packs without a judge template
+    (selfplay, MCQ-only) and packs whose open-ended grading is optional
+    legitimately run with no client. The rubric's ``verdict`` raises at
+    call time if an open-ended grade is actually attempted against a
+    None client.
     """
     if explicit is not None:
         return explicit
     if api_key is None and base_url is None:
-        raise ValueError(
-            "load_environment: must provide 'judge_client' OR "
-            "'judge_api_key'/'judge_base_url'; DebateRubric requires a judge "
-            "at rollout time."
-        )
+        return None
     from openai import AsyncOpenAI
 
     from verifiers.clients.openai_chat_completions_client import (
