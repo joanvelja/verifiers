@@ -267,11 +267,13 @@ class DebateRubric(MultiAgentRubric):
     def build_errored_marscore(
         self, state: State, *, error_type: str, error_phase: str
     ) -> MARScore:
-        """Zero-reward MARScore with parse_error_count preserved for debug."""
-        try:
-            steps_by_mid = self.split_by_member(state)
-        except ValueError:
-            steps_by_mid = {}
+        """Zero-reward MARScore with parse_error_count preserved for debug.
+
+        Propagates ValueError from ``split_by_member`` — a trajectory
+        step missing ``extras['member_id']`` is a schema violation that
+        should fail loud, not get silently zeroed.
+        """
+        steps_by_mid = self.split_by_member(state)
         snaps = {
             mid: member_snapshot(mid, steps_by_mid.get(mid, []), self.prompts)
             for mid in self.members
