@@ -369,7 +369,7 @@ class MultiAgentEnv(vf.Environment):
         # Resolve once per slot, not per agent — a dynamic bindings fn
         # is a pure function on state, so N calls would be redundant.
         bindings = self._get_bindings(state)
-        overrides = [bindings.get(a, (None, None)) for a in slot.agents]
+        overrides = [bindings[a] for a in slot.agents]
 
         # Per-agent request contexts isolate the prefix-cache partition key
         # (``lineage_key``) and usage accounting across concurrent branches
@@ -539,7 +539,7 @@ class MultiAgentEnv(vf.Environment):
         tokens = await parse_response_tokens(response, self.max_seq_len)
         response_is_truncated = response.message.is_truncated or False
         is_truncated = response_is_truncated or (
-            tokens is not None and bool(tokens.get("is_truncated"))
+            tokens is not None and tokens["is_truncated"]
         )
         extras: dict[str, Any] = {
             "member_id": utt.member_id,

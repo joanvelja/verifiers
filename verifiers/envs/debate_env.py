@@ -84,13 +84,12 @@ class DebateEnv(MultiAgentEnv):
         # Cross-check 1: env.members must equal rubric.members exactly.
         # Silent drift desyncs round_index (env) from per-member reward
         # attribution (rubric) and yields plausible-but-wrong training
-        # signal. Only enforced when the rubric exposes a members attribute.
-        rubric_members = getattr(self.rubric, "members", None)
-        if rubric_members is not None and list(rubric_members) != list(members):
+        # signal. Rubric contract (MultiAgentRubric) guarantees the attr.
+        if list(self.rubric.members) != list(members):
             raise ValueError(
                 f"DebateEnv.members != rubric.members\n"
                 f"  env    : {list(members)}\n"
-                f"  rubric : {list(rubric_members)}\n"
+                f"  rubric : {list(self.rubric.members)}\n"
                 f"Both must be identical (same ids, same order) -- "
                 f"round_index and reward attribution key off them."
             )
@@ -354,7 +353,7 @@ class DebateEnv(MultiAgentEnv):
             phase=phase,
             round_index=round_index,
             num_rounds=num_rounds,
-            answer=state.get("answer", ""),
+            answer=state["answer"],
         )
 
     def _render_own_turn(
@@ -571,17 +570,22 @@ def _build_judge_client(
     api_key: str | None,
     base_url: str | None,
     max_retries: int,
-) -> Any | None:
+) -> Any:
     """Return a judge client from an explicit object OR connection kwargs.
 
-    Pure construction — no validation. The rubric's ``__init__`` is the
-    single owner of the "client type" and "open-ended grading requires a
-    client" invariants. Returns ``None`` when neither source is provided.
+    DebateRubric production rollouts always need a judge — if the caller
+    provides neither an explicit client nor api_key/base_url, raise.
+    (Tests that instantiate DebateRubric directly can still pass
+    ``judge_client=None``; this validation lives on the production entry.)
     """
     if explicit is not None:
         return explicit
     if api_key is None and base_url is None:
-        return None
+        raise ValueError(
+            "load_environment: must provide 'judge_client' OR "
+            "'judge_api_key'/'judge_base_url'; DebateRubric requires a judge "
+            "at rollout time."
+        )
     from openai import AsyncOpenAI
 
     from verifiers.clients.openai_chat_completions_client import (
