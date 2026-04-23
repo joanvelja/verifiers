@@ -239,6 +239,9 @@ class DebateRubric(MultiAgentRubric):
 
         members: list[MemberScore] = []
         episode_metrics: dict[str, float] = {}
+        # First/final commits per debater feed downstream mind-change
+        # analysis; absent when the debater produced no parseable <answer>.
+        episode_categorical: dict[str, str | None] = {"winner": winner}
         for mid in self.members:
             m = snaps[mid]
             metrics: dict[str, float] = {"turns": float(m["turns"])}
@@ -251,24 +254,13 @@ class DebateRubric(MultiAgentRubric):
                     metrics=metrics,
                 )
             )
+            if mid != "judge" and m["commits"]:
+                episode_categorical[f"first_answer/{mid}"] = m["commits"][0]
+                episode_categorical[f"final_answer/{mid}"] = m["commits"][-1]
         await self.emit_agreement(snaps, question, state, episode_metrics)
         await self.emit_truth_member_correct(
             snaps, target, question, state, winner, episode_metrics
         )
-
-        # First/final committed answers per debater, for downstream
-        # mind-change analysis and calibration hooks. commits is the
-        # chronological list from member_snapshot; absent when the
-        # debater produced no parseable <answer> tag.
-        episode_categorical: dict[str, str | None] = {"winner": winner}
-        for mid in self.members:
-            if mid == "judge":
-                continue
-            seq = snaps[mid]["commits"]
-            if not seq:
-                continue
-            episode_categorical[f"first_answer/{mid}"] = seq[0]
-            episode_categorical[f"final_answer/{mid}"] = seq[-1]
 
         return MARScore(
             members=members,
@@ -323,9 +315,10 @@ class DebateRubric(MultiAgentRubric):
         seq = m["commits"]
         dst["num_commits"] = float(len(seq))
         dst["num_unique_commits"] = float(len(set(seq)))
-        # flipped: first commit != final commit. 0 when <2 commits (no
-        # mind-change possible). Independent of correctness — see
-        # initial_correct/final_correct for the (good, bad) decomposition.
+        # flipped: first != final. Differs from num_unique_commits>1 on
+        # return-trips like [A,B,A] (unique=2, flipped=0). Orthogonal to
+        # correctness — see initial_correct/final_correct for the (good,
+        # bad) decomposition.
         dst["flipped"] = 1.0 if len(seq) >= 2 and seq[0] != seq[-1] else 0.0
         if not target or not self.member_declares_answer.get(member_id, False):
             return
