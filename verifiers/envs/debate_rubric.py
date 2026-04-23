@@ -232,30 +232,27 @@ class DebateRubric(MultiAgentRubric):
             for mid in self.members
         }
 
+        per_member_metrics, episode_metrics = await self._emit_diagnostics(
+            snaps, target, question, state, winner
+        )
+
         members: list[MemberScore] = []
-        episode_metrics: dict[str, float] = {}
         # First/final commits per debater feed downstream mind-change
         # analysis; absent when the debater produced no parseable <answer>.
         episode_categorical: dict[str, str | None] = {"winner": winner}
         for mid in self.members:
             m = snaps[mid]
-            metrics: dict[str, float] = {"turns": float(m["turns"])}
-            await self.emit_member_diagnostics(mid, m, target, question, state, metrics)
             members.append(
                 MemberScore(
                     member_id=mid,
                     reward=zero_sum_reward(mid, winner),
                     parse_error_count=m["parse_errors"],
-                    metrics=metrics,
+                    metrics=per_member_metrics[mid],
                 )
             )
             if mid != "judge" and m["commits"]:
                 episode_categorical[f"first_answer/{mid}"] = m["commits"][0]
                 episode_categorical[f"final_answer/{mid}"] = m["commits"][-1]
-        await self.emit_agreement(snaps, question, state, episode_metrics)
-        await self.emit_truth_member_correct(
-            snaps, target, question, state, winner, episode_metrics
-        )
 
         return MARScore(
             members=members,
@@ -294,102 +291,97 @@ class DebateRubric(MultiAgentRubric):
 
     # -- diagnostics (weight-0; do not feed reward) ----------------------
 
-    async def emit_member_diagnostics(
-        self,
-        member_id: str,
-        m: dict[str, Any],
-        target: str,
-        question: str,
-        state: State,
-        dst: dict[str, float],
-    ) -> None:
-        """num_commits, num_unique_commits, flipped, accuracy,
-        extraction_failed, initial_correct, final_correct. Gated on
-        member≠judge; accuracy further gated on target + pack declaring
-        'answer' for this member."""
-        if member_id == "judge":
-            return
-        seq = m["commits"]
-        dst["num_commits"] = float(len(seq))
-        dst["num_unique_commits"] = float(len(set(seq)))
-        # flipped: first != final. Differs from num_unique_commits>1 on
-        # return-trips like [A,B,A] (unique=2, flipped=0). Orthogonal to
-        # correctness — see initial_correct/final_correct for the (good,
-        # bad) decomposition.
-        dst["flipped"] = 1.0 if len(seq) >= 2 and seq[0] != seq[-1] else 0.0
-        if not target or not self.member_declares_answer.get(member_id, False):
-            return
-        if not m["latest_had_answer"]:
-            if m["turns"]:
-                dst["extraction_failed"] = 1.0
-            return
-        spec = m["latest_spec"]
-        final = float(
-            await self.verdict(seq[-1], target, question, spec, "grader", state)
-        )
-        dst["accuracy"] = final
-        dst["final_correct"] = final
-        dst["extraction_failed"] = 0.0
-        dst["initial_correct"] = (
-            final
-            if seq[0] == seq[-1]
-            else float(
-                await self.verdict(seq[0], target, question, spec, "grader", state)
-            )
-        )
-
-    async def emit_agreement(
-        self,
-        snaps: dict[str, dict[str, Any]],
-        question: str,
-        state: State,
-        dst: dict[str, float],
-    ) -> None:
-        """agreement: do two debaters commit to the same final answer?"""
-        debaters = [
-            (mid, m)
-            for mid, m in snaps.items()
-            if mid != "judge" and m["latest_had_answer"]
-        ]
-        if len(debaters) < 2:
-            return
-        (_, a), (_, b) = debaters[0], debaters[1]
-        spec = a["latest_spec"] or b["latest_spec"]
-        dst["agreement"] = float(
-            await self.verdict(
-                b["commits"][-1], a["commits"][-1], question, spec, "matcher", state
-            )
-        )
-
-    async def emit_truth_member_correct(
+    async def _emit_diagnostics(
         self,
         snaps: dict[str, dict[str, Any]],
         target: str,
         question: str,
         state: State,
         winner: str | None,
-        dst: dict[str, float],
-    ) -> None:
-        """truth_member_correct: judge-less test packs only.
+    ) -> tuple[dict[str, dict[str, float]], dict[str, float]]:
+        """Compute per-member + episode diagnostic metrics in one pass.
 
-        Grades the truth-side debater's final answer vs ground truth when
-        the pack doesn't declare a judge. Telemetry only.
+        Returns ``(per_member_metrics, episode_metrics)``. All values are
+        weight-0 telemetry; none feed reward.
+
+        Per-member phase (``per_member[mid]``):
+          turns, num_commits, num_unique_commits, flipped; and — gated on
+          non-judge + target + pack declaring 'answer' for this member —
+          accuracy, final_correct, extraction_failed, initial_correct.
+          ``flipped`` is first != final; differs from num_unique_commits>1
+          on return-trips like [A,B,A] (unique=2, flipped=0). Orthogonal
+          to correctness — see initial_correct/final_correct for the
+          (good, bad) decomposition.
+
+        Episode phase (``episode_metrics``):
+          * ``agreement``: matcher verdict on the two debaters' final
+            answers; present only when both have committed.
+          * ``truth_member_correct``: judge-less test packs only; grades
+            the truth-side debater's final answer vs ground truth.
         """
-        if winner is not None or "judge" in self.prompts.fields or not target:
-            return
-        truth = snaps.get(self.truth_member)
-        if truth is None or not truth["latest_had_answer"]:
-            return
-        dst["truth_member_correct"] = float(
-            await self.verdict(
-                truth["commits"][-1],
-                target,
-                question,
-                truth["latest_spec"],
-                "grader",
-                state,
+        per_member: dict[str, dict[str, float]] = {}
+        episode: dict[str, float] = {}
+
+        for mid in self.members:
+            m = snaps[mid]
+            dst: dict[str, float] = {"turns": float(m["turns"])}
+            per_member[mid] = dst
+            if mid == "judge":
+                continue
+            seq = m["commits"]
+            dst["num_commits"] = float(len(seq))
+            dst["num_unique_commits"] = float(len(set(seq)))
+            dst["flipped"] = 1.0 if len(seq) >= 2 and seq[0] != seq[-1] else 0.0
+            if not target or not self.member_declares_answer.get(mid, False):
+                continue
+            if not m["latest_had_answer"]:
+                if m["turns"]:
+                    dst["extraction_failed"] = 1.0
+                continue
+            spec = m["latest_spec"]
+            final = float(
+                await self.verdict(seq[-1], target, question, spec, "grader", state)
             )
-        )
+            dst["accuracy"] = final
+            dst["final_correct"] = final
+            dst["extraction_failed"] = 0.0
+            dst["initial_correct"] = (
+                final
+                if seq[0] == seq[-1]
+                else float(
+                    await self.verdict(seq[0], target, question, spec, "grader", state)
+                )
+            )
+
+        debaters = [
+            (mid, m)
+            for mid, m in snaps.items()
+            if mid != "judge" and m["latest_had_answer"]
+        ]
+        if len(debaters) >= 2:
+            (_, a), (_, b) = debaters[0], debaters[1]
+            spec = a["latest_spec"] or b["latest_spec"]
+            episode["agreement"] = float(
+                await self.verdict(
+                    b["commits"][-1], a["commits"][-1], question, spec, "matcher", state
+                )
+            )
+
+        if winner is None and "judge" not in self.prompts.fields and target:
+            truth = snaps.get(self.truth_member)
+            if truth is not None and truth["latest_had_answer"]:
+                episode["truth_member_correct"] = float(
+                    await self.verdict(
+                        truth["commits"][-1],
+                        target,
+                        question,
+                        truth["latest_spec"],
+                        "grader",
+                        state,
+                    )
+                )
+
+        return per_member, episode
 
     async def verdict(
         self,
