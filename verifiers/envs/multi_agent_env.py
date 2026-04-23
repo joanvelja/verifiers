@@ -369,7 +369,11 @@ class MultiAgentEnv(vf.Environment):
         # Resolve once per slot, not per agent — a dynamic bindings fn
         # is a pure function on state, so N calls would be redundant.
         bindings = self._get_bindings(state)
-        overrides = [bindings[a] for a in slot.agents]
+        # Static ``agent_bindings`` is allowed to cover only a subset of
+        # members (absent member → use rollout-default client/model). The
+        # dynamic-fn path is schema-validated to have full coverage; the
+        # static path isn't. Keep the fallback.
+        overrides = [bindings.get(a, (None, None)) for a in slot.agents]
 
         # Per-agent request contexts isolate the prefix-cache partition key
         # (``lineage_key``) and usage accounting across concurrent branches
