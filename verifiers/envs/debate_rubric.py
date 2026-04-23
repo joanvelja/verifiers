@@ -183,11 +183,6 @@ class DebateRubric(MultiAgentRubric):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        if judge_client is not None and not isinstance(judge_client, Client):
-            raise TypeError(
-                f"judge_client must be a vf.Client subclass, "
-                f"got {type(judge_client).__name__}"
-            )
         self.truth_member = truth_member
         self.members = members
         self.prompts = prompts
@@ -239,6 +234,9 @@ class DebateRubric(MultiAgentRubric):
 
         members: list[MemberScore] = []
         episode_metrics: dict[str, float] = {}
+        # First/final commits per debater feed downstream mind-change
+        # analysis; absent when the debater produced no parseable <answer>.
+        episode_categorical: dict[str, str | None] = {"winner": winner}
         for mid in self.members:
             m = snaps[mid]
             metrics: dict[str, float] = {"turns": float(m["turns"])}
@@ -251,6 +249,9 @@ class DebateRubric(MultiAgentRubric):
                     metrics=metrics,
                 )
             )
+            if mid != "judge" and m["commits"]:
+                episode_categorical[f"first_answer/{mid}"] = m["commits"][0]
+                episode_categorical[f"final_answer/{mid}"] = m["commits"][-1]
         await self.emit_agreement(snaps, question, state, episode_metrics)
         await self.emit_truth_member_correct(
             snaps, target, question, state, winner, episode_metrics
@@ -260,7 +261,7 @@ class DebateRubric(MultiAgentRubric):
             members=members,
             episode_scalar=1.0 if winner == self.truth_member else 0.0,
             episode_metrics=episode_metrics,
-            episode_categorical={"winner": winner},
+            episode_categorical=episode_categorical,
         )
 
     def build_errored_marscore(
@@ -300,20 +301,27 @@ class DebateRubric(MultiAgentRubric):
         state: State,
         dst: dict[str, float],
     ) -> None:
-        """num_commits, num_unique_commits, accuracy, extraction_failed,
-        initial_correct, final_correct. Gated on member≠judge; accuracy
-        further gated on target + pack declaring 'answer' for this member."""
+        """num_commits, num_unique_commits, flipped, accuracy,
+        extraction_failed, initial_correct, final_correct. Gated on
+        member≠judge; accuracy further gated on target + pack declaring
+        'answer' for this member."""
         if member_id == "judge":
             return
-        dst["num_commits"] = float(len(m["commits"]))
-        dst["num_unique_commits"] = float(len(set(m["commits"])))
+        seq = m["commits"]
+        dst["num_commits"] = float(len(seq))
+        dst["num_unique_commits"] = float(len(set(seq)))
+        # flipped: first != final. Differs from num_unique_commits>1 on
+        # return-trips like [A,B,A] (unique=2, flipped=0). Orthogonal to
+        # correctness — see initial_correct/final_correct for the (good,
+        # bad) decomposition.
+        dst["flipped"] = 1.0 if len(seq) >= 2 and seq[0] != seq[-1] else 0.0
         if not target or not self.member_declares_answer.get(member_id, False):
             return
         if not m["latest_had_answer"]:
             if m["turns"]:
                 dst["extraction_failed"] = 1.0
             return
-        spec, seq = m["latest_spec"], m["commits"]
+        spec = m["latest_spec"]
         final = float(
             await self.verdict(seq[-1], target, question, spec, "grader", state)
         )
