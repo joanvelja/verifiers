@@ -65,7 +65,7 @@ def winning_member(trajectory: list[TrajectoryStep]) -> str | None:
     silently install a stale verdict.
     """
     for step in reversed(trajectory):
-        extras = step.get("extras", {})
+        extras = step["extras"]
         if extras.get("member_id") != "judge":
             continue
         return (extras.get("fields") or {}).get("decision")
@@ -205,7 +205,7 @@ class DebateRubric(MultiAgentRubric):
         target = str(state["answer"])
         question = question_from_state(state)
         steps_by_mid = self.split_by_member(state)
-        winner = winning_member(state.get("trajectory", []))
+        winner = winning_member(state["trajectory"])
         if winner is None and "judge" in self.prompts.fields:
             raise vf.Error(
                 f"Pack {self.prompts.source_ref!r} declares a judge but no "

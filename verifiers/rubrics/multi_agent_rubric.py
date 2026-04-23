@@ -52,8 +52,8 @@ class MultiAgentRubric(Rubric):
         A missing value signals a framework-invariant violation.
         """
         out: dict[str, list[TrajectoryStep]] = defaultdict(list)
-        for step in state_or_output.get("trajectory", []):
-            mid = step.get("extras", {}).get("member_id")
+        for step in state_or_output["trajectory"]:
+            mid = step["extras"].get("member_id")
             if mid is None:
                 raise ValueError(
                     f"TrajectoryStep missing extras['member_id']: {step!r}"
