@@ -57,13 +57,18 @@ class RubricGroup(Rubric):
         Evaluate all reward functions in-place for a single rollout.
         """
         total_reward = 0.0
+        total_scoring_ms = 0.0
         aggregated_metrics: dict[str, float] = {}
         original_reward = state.get("reward", 0.0)
         original_metrics = (
             state.get("metrics", {}).copy() if state.get("metrics") else {}
         )
         for rubric in self.rubrics:
+            timing = state.get("timing", {})
+            before_total_ms = timing.get("total_ms", 0.0)
             await rubric.score_rollout(state)
+            timing = state.get("timing", {})
+            total_scoring_ms += max(0.0, timing.get("total_ms", 0.0) - before_total_ms)
             rubric_reward = state.get("reward", 0.0)
             rubric_metrics = (
                 state.get("metrics", {}).copy() if state.get("metrics") else {}
@@ -76,6 +81,8 @@ class RubricGroup(Rubric):
             state["metrics"] = original_metrics.copy()
         state["reward"] = total_reward
         state["metrics"] = aggregated_metrics
+        if "timing" in state:
+            state["timing"]["scoring_ms"] = total_scoring_ms
 
     async def cleanup(self, state: State):
         """Run cleanup for all rubrics in the group."""
@@ -94,6 +101,7 @@ class RubricGroup(Rubric):
         Evaluate all reward functions in-place for a group of rollouts.
         """
         aggregated_rewards = [0.0] * len(states)
+        aggregated_scoring_ms = [0.0] * len(states)
         aggregated_metrics: dict[str, list[float]] = {}
         original_rewards = [state.get("reward", 0.0) for state in states]
         original_metrics = [
@@ -101,8 +109,15 @@ class RubricGroup(Rubric):
             for state in states
         ]
         for rubric in self.rubrics:
+            before_total_ms = [
+                state.get("timing", {}).get("total_ms", 0.0) for state in states
+            ]
             await rubric.score_group(states)
             for i, state in enumerate(states):
+                timing = state.get("timing", {})
+                aggregated_scoring_ms[i] += max(
+                    0.0, timing.get("total_ms", 0.0) - before_total_ms[i]
+                )
                 rubric_reward = state.get("reward", 0.0)
                 rubric_metrics = (
                     state.get("metrics", {}).copy() if state.get("metrics") else {}
@@ -121,3 +136,5 @@ class RubricGroup(Rubric):
                     state["metrics"] = {}
                 for key, values in aggregated_metrics.items():
                     state["metrics"][key] = values[i]
+            if "timing" in state:
+                state["timing"]["scoring_ms"] = aggregated_scoring_ms[i]

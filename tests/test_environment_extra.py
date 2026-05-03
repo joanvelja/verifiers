@@ -240,6 +240,32 @@ async def test_state_to_output_uses_state_usage_not_trajectory(
     assert output["token_usage"] == {"input_tokens": 5.0, "output_tokens": 4.0}
 
 
+def test_state_to_output_persists_judge_response_without_state_columns():
+    state = vf.State(
+        input=RolloutInput(
+            prompt=[{"role": "user", "content": "What is 2+2?"}],
+            answer="4",
+            task="default",
+            example_id="judge-case",
+        )
+    )
+    state["completion"] = [{"role": "assistant", "content": "four"}]
+    state["trajectory"] = []
+    state["reward"] = 1.0
+    state["metrics"] = {"correct_answer": 1.0}
+    state["timing"] = {
+        "generation_ms": 10.0,
+        "scoring_ms": 20.0,
+        "total_ms": 30.0,
+        "start_time": 0.0,
+    }
+    state["judge_response"] = {"rendered prompt": "CORRECT"}
+
+    output = state_to_output(state, state_columns=[])
+
+    assert output["judge_response"] == {"rendered prompt": "CORRECT"}
+
+
 @pytest.mark.asyncio
 async def test_get_model_response_completion_rejects_tools(
     mock_client, make_dummy_env, make_input

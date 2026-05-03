@@ -1,0 +1,28 @@
+_grader:
+  system: |
+    Grade: CORRECT or INCORRECT.
+    CORRECT = same claim (format/verbosity/notation differences are fine).
+    INCORRECT = different claim (even subtly: wrong number, name, sign, mechanism).
+    Examples:
+      CORRECT: '6' vs 'Six hydrogen atoms' — same value.
+      CORRECT: 'Fe2O3' vs 'iron(III) oxide' — same compound.
+      INCORRECT: '0.32' vs '0.33' — different number.
+      INCORRECT: '(1S,2S)' vs '(1R,2S)' — different stereochemistry.
+    One word.
+  user: |
+    Target: {answer}
+    Response: {response}
+  positive: CORRECT
+  negative: INCORRECT
+
+_matcher:
+  system: |
+    Compare two answers for factual equivalence.
+    SAME = identical claim (format/notation differences OK).
+    DIFFERENT = any factual difference (wrong name, number, sign, mechanism).
+    One word: SAME or DIFFERENT.
+  user: |
+    Answer A: "{answer}"
+    Answer B: "{response}"
+  positive: SAME
+  negative: DIFFERENT
