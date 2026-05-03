@@ -85,7 +85,9 @@ class NumericClassification:
 # ---------------------------------------------------------------------------
 
 
-def classify_binary(value: Any, true_value: str, false_value: str) -> BinaryClassification:
+def classify_binary(
+    value: Any, true_value: str, false_value: str
+) -> BinaryClassification:
     """Classify value as true/false/invalid using exact match + first-token fallback."""
     s = _canon_binary(str(value))
     tv = _canon_binary(true_value)
@@ -120,7 +122,9 @@ def classify_enum(value: Any, values: tuple[str, ...]) -> EnumClassification:
     return EnumClassification(canonical=None, is_valid=False)
 
 
-def classify_numeric(value: Any, min_val: float, max_val: float) -> NumericClassification:
+def classify_numeric(
+    value: Any, min_val: float, max_val: float
+) -> NumericClassification:
     """Classify numeric value: isinstance primary path, defensive float() fallback."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         if math.isfinite(value) and min_val <= value <= max_val:
@@ -181,7 +185,9 @@ class NumericScoring(ScoringMode):
 # ---------------------------------------------------------------------------
 
 
-def binary_normalizer(true_value: str = "yes", false_value: str = "no") -> Callable[[Any], Any]:
+def binary_normalizer(
+    true_value: str = "yes", false_value: str = "no"
+) -> Callable[[Any], Any]:
     """Normalize extracted value via classify_binary; passthrough on invalid."""
 
     def _normalize(value: Any) -> Any:
@@ -207,7 +213,7 @@ def enum_normalizer(values: tuple[str, ...]) -> Callable[[Any], Any]:
         if c.is_valid:
             return c.canonical
         if is_mcq:
-            from .mcq import normalize_mcq
+            from verifiers.utils.mcq import normalize_mcq
 
             extracted = normalize_mcq(str(value))
             if extracted is not None:
@@ -219,7 +225,9 @@ def enum_normalizer(values: tuple[str, ...]) -> Callable[[Any], Any]:
     return _normalize
 
 
-def numeric_normalizer(min_val: float = 0.0, max_val: float = 1.0) -> Callable[[Any], Any]:
+def numeric_normalizer(
+    min_val: float = 0.0, max_val: float = 1.0
+) -> Callable[[Any], Any]:
     """Normalize extracted value via classify_numeric; passthrough on invalid."""
 
     def _normalize(value: Any) -> Any:
@@ -420,6 +428,8 @@ def _resolve_fields(raw: dict[str, str | _FieldDesc]) -> dict[str, FieldSpec]:
             scoring = resolve_scoring(spec.get("scoring"))
             if scoring is not None:
                 validate_type_scoring(name, ft, scoring)
-            normalizer = normalizer_for_scoring(scoring) if scoring is not None else None
+            normalizer = (
+                normalizer_for_scoring(scoring) if scoring is not None else None
+            )
             result[name] = FieldSpec(ft, desc, scoring, normalizer)
     return result

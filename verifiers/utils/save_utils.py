@@ -209,6 +209,30 @@ def state_to_output(
             }
     if usage is not None:
         output["token_usage"] = usage
+    judge_response = state.get("judge_response")
+    if judge_response is not None:
+        if not is_json_serializable(judge_response):
+            raise ValueError(
+                "state['judge_response'] is not JSON-serializable: "
+                f"{type(judge_response).__name__}"
+            )
+        output["judge_response"] = judge_response
+    judge_decision = state.get("judge_decision")
+    if judge_decision is not None:
+        if not is_json_serializable(judge_decision):
+            raise ValueError(
+                "state['judge_decision'] is not JSON-serializable: "
+                f"{type(judge_decision).__name__}"
+            )
+        output["judge_decision"] = judge_decision
+    judge_decision_last = state.get("judge_decision_last")
+    if judge_decision_last is not None:
+        if not is_json_serializable(judge_decision_last):
+            raise ValueError(
+                "state['judge_decision_last'] is not JSON-serializable: "
+                f"{type(judge_decision_last).__name__}"
+            )
+        output["judge_decision_last"] = judge_decision_last
 
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")

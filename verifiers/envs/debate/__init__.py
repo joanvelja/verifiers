@@ -2,7 +2,12 @@
 
 from .fields import FieldSpec
 from .parsing import extract_fields
-from .prompts import DebatePrompts, JudgeTemplate, build_context, resolve_prompts
+from .prompts import (
+    DebatePrompts,
+    build_context,
+    resolve_prompts,
+)
+from verifiers.utils.judge_prompts import JudgeTemplate, normalize_verdict_token
 
 __all__ = [
     "DebatePrompts",
@@ -10,5 +15,6 @@ __all__ = [
     "JudgeTemplate",
     "build_context",
     "extract_fields",
+    "normalize_verdict_token",
     "resolve_prompts",
 ]

@@ -1,0 +1,18 @@
+[project]
+name = "hf-singleturn"
+version = "0.1.0"
+description = "Generic Hugging Face single-turn RLVR environment"
+readme = "README.md"
+tags = ["hf", "single-turn", "rlvr"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.12",
+    "datasets>=3.0.0,<4.7.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["hf_singleturn.py", "pyproject.toml", "README.md"]

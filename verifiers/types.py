@@ -267,7 +267,7 @@ class RolloutOutput(dict):
                      is_completed, is_truncated, metrics, sampling_args,
                      trajectory_id
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
-                     token_usage, mar_score
+                     token_usage, judge_response, mar_score
     Additional fields: arbitrary serializable state_columns
     """
 
@@ -291,6 +291,7 @@ class RolloutOutput(dict):
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
     token_usage: TokenUsage
+    judge_response: dict[str, str]
     mar_score: "MARScore"  # populated by MultiAgentRubric subclasses
 
 
@@ -459,6 +460,7 @@ _RESERVED_FLAT_KEYS: frozenset[str] = frozenset(
         "trajectory",
         "tool_defs",
         "token_usage",
+        "judge_response",
         "mar_score",
         "trajectory_id",
         "sampling_args",

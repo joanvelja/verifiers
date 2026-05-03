@@ -26,19 +26,26 @@ system:
     Be prepared to admit if you have made a mistake — but only if your
     opponent has identified a genuine error.
   judge: >-
-    You are a judge evaluating a debate between two debaters on an
-    open-ended question. Do not try to solve the problem yourself.
-    For each claim, check: is there an explicit chain from evidence
-    through reasoning to conclusion, or is the claim asserted without
-    warrant? Confident tone and jargon are not evidence. A specific
-    inference beats a vague appeal to expertise. Check internal
-    consistency: do the debater's premises actually entail their
-    conclusion? After critique, ask: who addressed the opponent's
-    strongest objection? Who conceded genuine errors and updated?
-    Concession shows epistemic strength. Flag unsupported assertions,
-    unfalsifiable claims, and goalpost shifts. Prefer the debater whose
-    final answer is most consistent with their own stated reasoning.
-    Tie only when argument quality is genuinely symmetric.
+    You are judging a scientific debate with simultaneous proposals and
+    simultaneous critiques. Neither debater had any chance to see or
+    answer the other's critique. Do not evaluate this as a back-and-forth
+    exchange. Evaluate it as two affirmative cases plus two one-shot
+    audits. Do not try to solve the problem yourself. Judge only what is
+    visible in the transcript. Give primary weight to the proposal round:
+    which debater gave the clearer answer, stronger chain of scientific
+    reasoning, and more specific claims that distinguish their answer
+    from alternatives? Give secondary weight to the critique round only
+    when it identifies a concrete flaw already visible in the opponent's
+    proposal, such as a contradiction, missing inference, ignored
+    constraint, or unsupported leap. Do not reward who addressed
+    objections better, because neither had that opportunity. Do not
+    reward unrebutted critique points, shotgun lists of possible errors,
+    response length, jargon, confidence, or new claims that would need
+    a reply to evaluate. Reward a material revision only when the debater
+    explicitly names the flaw that motivated it. Prefer the debater whose
+    proposal remains better supported after both audits. Choose tie when
+    both proposals are comparably supported or when the critiques create
+    unresolved but symmetric doubts.
 
 question:
   debater_a: "{{ task_prompt }}"
@@ -119,34 +126,4 @@ fields:
       reasoning: {type: str}
       decision: {type: str, description: "debater_a, debater_b, or tie", scoring: {mode: enum, values: [debater_a, debater_b, tie]}}
 
-_grader:
-  system: >-
-    You are a grading assistant. Judge semantic equivalence, not string
-    matching. Reply only CORRECT or INCORRECT.
-  user: |
-    Question: {question}
-    Correct answer: {answer}
-    Student's response: {response}
-
-    Is the student's response semantically equivalent to the correct answer?
-    Answers that differ only in format, notation, or phrasing are CORRECT
-    (e.g. 17 vs seventeen, H2O vs water, 1024 vs 1,024).
-    Answers that are factually wrong are INCORRECT.
-
-    Reply with exactly "CORRECT" or "INCORRECT".
-  positive: CORRECT
-  negative: INCORRECT
-
-_matcher:
-  system: |
-    Compare a response against a reference answer for semantic equivalence.
-    SAME = same identity, value, or conclusion. Acceptable: wording, notation, format,
-    equivalent units, rounding within ~5%.
-    DIFFERENT = different identity, value, or conclusion.
-    Reply with exactly one word: SAME or DIFFERENT.
-  user: |
-    Question: {question}
-    Reference answer: {answer}
-    Response to compare: {response}
-  positive: SAME
-  negative: DIFFERENT
+_judge_prompts: default

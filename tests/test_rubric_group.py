@@ -6,6 +6,47 @@ from verifiers import Rubric, RubricGroup, XMLParser
 from verifiers.types import RolloutInput, RolloutTiming, State
 
 
+class TimingRubric(Rubric):
+    def __init__(self, name: str, reward: float, scoring_ms: float):
+        super().__init__()
+        self.name = name
+        self.reward = reward
+        self.scoring_ms = scoring_ms
+
+    def apply_score(self, state: State) -> None:
+        state["reward"] = self.reward
+        state["metrics"] = {self.name: self.reward}
+        state["timing"]["scoring_ms"] = self.scoring_ms
+        state["timing"]["total_ms"] += self.scoring_ms
+
+    async def score_rollout(self, state: State):
+        self.apply_score(state)
+
+    async def score_group(self, states: list[State]):
+        for state in states:
+            self.apply_score(state)
+
+
+def make_timing_state(example_id: int = 0, total_ms: float = 0.0) -> State:
+    state = State(
+        input=RolloutInput(
+            prompt=[{"role": "user", "content": "What is 1+1?"}],
+            answer="2",
+            task="default",
+            example_id=example_id,
+        )
+    )
+    state["completion"] = [{"role": "assistant", "content": "2"}]
+    state["trajectory"] = []
+    state["timing"] = RolloutTiming(
+        generation_ms=total_ms,
+        scoring_ms=0.0,
+        total_ms=total_ms,
+        start_time=0.0,
+    )
+    return state
+
+
 class TestRubricGroup:
     """Test cases for the RubricGroup class."""
 
@@ -169,6 +210,44 @@ class TestRubricGroup:
         assert "func2" in state["metrics"]
         assert state["metrics"]["func1"] == 1.0
         assert state["metrics"]["func2"] == 0.5
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_score_rollout_aggregates_scoring_ms(self):
+        group = RubricGroup(
+            rubrics=[
+                TimingRubric("first", reward=1.0, scoring_ms=10.0),
+                TimingRubric("second", reward=2.0, scoring_ms=20.0),
+            ]
+        )
+        state = make_timing_state(total_ms=5.0)
+
+        await group.score_rollout(state)
+
+        assert state["reward"] == 3.0
+        assert state["metrics"] == {"first": 1.0, "second": 2.0}
+        assert state["timing"]["scoring_ms"] == 30.0
+        assert state["timing"]["total_ms"] == 35.0
+
+    @pytest.mark.asyncio
+    async def test_rubric_group_score_group_aggregates_scoring_ms(self):
+        group = RubricGroup(
+            rubrics=[
+                TimingRubric("first", reward=1.0, scoring_ms=10.0),
+                TimingRubric("second", reward=2.0, scoring_ms=20.0),
+            ]
+        )
+        states = [
+            make_timing_state(example_id=0, total_ms=5.0),
+            make_timing_state(example_id=1, total_ms=7.0),
+        ]
+
+        await group.score_group(states)
+
+        for state, expected_total_ms in zip(states, [35.0, 37.0]):
+            assert state["reward"] == 3.0
+            assert state["metrics"] == {"first": 1.0, "second": 2.0}
+            assert state["timing"]["scoring_ms"] == 30.0
+            assert state["timing"]["total_ms"] == expected_total_ms
 
     @pytest.mark.asyncio
     async def test_rubric_group_score_rollouts_duplicate_names(self):
