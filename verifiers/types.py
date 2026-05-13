@@ -166,6 +166,7 @@ class ResponseTokens(CustomBaseModel):
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
+    prompt_message_indices: list[int] | None = None
     routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
 
 
@@ -176,6 +177,12 @@ class ResponseMessage(AssistantMessage):
     finish_reason: FinishReason
     is_truncated: bool | None
     tokens: ResponseTokens | None = None
+    renderer_stream_id: str | None = Field(default=None, exclude=True)
+    renderer_prepared_turn: Any | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
 
 
 class Response(CustomBaseModel):
@@ -203,6 +210,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
+    prompt_message_indices: NotRequired[list[int] | None]
     routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk]
 
 
@@ -615,6 +623,20 @@ class ClientConfig(BaseModel):
         "For each request, the header value is read from the state dict. "
         'e.g. {"X-Session-ID": "example_id"} adds a X-Session-ID header '
         "with the value of state['example_id'].",
+    )
+    renderer: str | None = Field(
+        default="auto",
+        description=(
+            "Renderer name for token clients. Set to 'auto' to use renderers' "
+            "model registry for exact multi-turn token bridging."
+        ),
+    )
+    renderer_tokenizer_name_or_path: str | None = Field(
+        default=None,
+        description=(
+            "Tokenizer path used to construct the renderer. Defaults to the "
+            "request model name when unset."
+        ),
     )
 
     @field_validator("extra_headers", mode="before")

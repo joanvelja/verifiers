@@ -28,6 +28,8 @@ from typing import (
     final,
 )
 
+from renderers.streams import StreamSet
+
 from verifiers.clients import Client, resolve_client
 from verifiers.decorators import discover_decorated
 from verifiers.serve import ZMQEnvClient
@@ -37,6 +39,7 @@ from verifiers.utils.client_utils import (
 )
 from verifiers.utils.eval_utils import filter_inputs
 from verifiers.utils.path_utils import is_valid_eval_results_path
+from verifiers.utils.rendered_streams import RENDERER_STREAMS_STATE_KEY
 from verifiers.utils.serve_utils import get_free_port
 from verifiers.utils.thread_utils import scale_executors
 
@@ -618,6 +621,7 @@ class Environment(ABC):
         state["tool_defs"] = self._normalize_tool_defs(resolved_tool_defs) or []
 
         state["trajectory"] = []
+        state[RENDERER_STREAMS_STATE_KEY] = StreamSet()
         state["completion"] = None
         self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex

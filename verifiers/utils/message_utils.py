@@ -182,7 +182,7 @@ def fold_consecutive_user_messages(
     Multi-agent envs emit prompts with neighbouring user messages
     (opponent turns + current-agent instruction). Chat templates render
     this as ``<|im_start|>user\\n…<|im_end|>`` repeated, which is OOD for
-    the model and breaks the stitcher's ``_is_valid_env_tail`` gate.
+    the model and makes renderer continuation harder to reason about.
     Folding collapses each user run into a single message whose content
     is the run's pieces joined by ``separator``.
 

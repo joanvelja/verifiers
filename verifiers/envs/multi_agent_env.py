@@ -53,6 +53,11 @@ from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
 )
+from verifiers.utils.rendered_streams import (
+    RENDERER_STREAMS_STATE_KEY,
+    commit_rendered_step,
+    get_renderer_streams,
+)
 from verifiers.utils.usage_utils import StateUsageTracker
 
 _log = logging.getLogger(__name__)
@@ -78,8 +83,8 @@ class MultiAgentEnv(vf.Environment):
         ``build_prompt(state, A, slot_N)`` by appending at most a
         [user, assistant-prefill] pair at the tail. No prior messages
         modified or removed. Violating this defeats the vLLM prefix-cache
-        reuse path in ``OpenAIChatCompletionsTokenClient.get_prompt_ids``
-        and forces O(T²) tokenization over a T-turn episode.
+        reuse path in ``OpenAIChatCompletionsTokenClient`` and forces
+        O(T²) tokenization over a T-turn episode.
     """
 
     def __init__(
@@ -250,9 +255,8 @@ class MultiAgentEnv(vf.Environment):
         subclass boundary: if a subclass returns raw dicts it warns once
         and promotes to typed. ``fold_consecutive_user_messages`` then
         runs typed-in → typed-out, preserving types through to the
-        model-request and the stitcher. Folding collapses adjacent user
-        runs so chat-template rendering stays in-distribution and the
-        token-stitch tail passes ``_is_valid_env_tail``.
+        model-request and the renderer bridge. Folding collapses adjacent
+        user runs so chat-template rendering stays in-distribution.
         """
         prompt = await self.build_prompt(state, agent, slot)
         prompt = maybe_normalize_messages(prompt, field_name="multi_agent_prompt")
@@ -342,6 +346,11 @@ class MultiAgentEnv(vf.Environment):
         utt = result.committed[0]
         fields = await self.extract_fields(utt.public_channel, agent, slot)
         step = await self._build_step(state, prompt, response, utt, fields)
+        state[RENDERER_STREAMS_STATE_KEY] = commit_rendered_step(
+            get_renderer_streams(state),
+            step,
+            stream_id=agent,
+        )
         state["trajectory"].append(step)
 
     @final
@@ -511,12 +520,21 @@ class MultiAgentEnv(vf.Environment):
             step = await self._build_step(state, prompt, response, utt, fields)
             staged_steps.append(step)
 
+        staged_streams = get_renderer_streams(state)
+        for agent, step in zip(slot.agents, staged_steps):
+            staged_streams = commit_rendered_step(
+                staged_streams,
+                step,
+                stream_id=agent,
+            )
+
         # Phase 3: PUBLISH. Synchronous tail: trajectory appends + kernel
         # assignment + usage-tracker merge. No awaits, no raises after this
         # point. Merging is the accounting-side counterpart of the kernel
         # assignment — both happen iff the slot succeeds.
         for step in staged_steps:
             state["trajectory"].append(step)
+        state[RENDERER_STREAMS_STATE_KEY] = staged_streams
         state["_kernel"] = staged_kernel
         if isinstance(parent_tracker, StateUsageTracker):
             for child in per_agent_trackers:

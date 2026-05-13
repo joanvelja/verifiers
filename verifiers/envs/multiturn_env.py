@@ -21,6 +21,11 @@ from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
 )
+from verifiers.utils.rendered_streams import (
+    RENDERER_STREAMS_STATE_KEY,
+    commit_rendered_step,
+    get_renderer_streams,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +120,10 @@ class MultiTurnEnv(vf.Environment):
 
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         """Override to set intermediate rewards, advantages, or extra metadata."""
+        state[RENDERER_STREAMS_STATE_KEY] = commit_rendered_step(
+            get_renderer_streams(state),
+            trajectory_step,
+        )
         state["trajectory"].append(trajectory_step)
 
     async def add_model_response(

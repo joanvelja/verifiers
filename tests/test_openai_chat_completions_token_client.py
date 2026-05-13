@@ -1,12 +1,24 @@
 from typing import Any, cast
 
 import pytest
+from renderers.base import ParsedResponse, RenderedTokens
+from renderers.streams import CompletedResponse, StreamSet
 
-from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.clients.openai_chat_completions_token_client import (
     OpenAIChatCompletionsTokenClient,
 )
-from verifiers.types import State
+from verifiers.types import (
+    Response,
+    ResponseMessage,
+    ResponseTokens,
+    State,
+    Usage,
+)
+from verifiers.utils.rendered_streams import (
+    RENDERER_STREAMS_STATE_KEY,
+    commit_rendered_step,
+)
+from verifiers.utils.response_utils import parse_response_tokens
 
 
 class _NoopClient:
@@ -23,323 +35,250 @@ class _RecordingClient(_NoopClient):
     async def post(
         self, path: str, body: dict[str, Any], cast_to: type, **kwargs: Any
     ) -> Any:
-        self.calls.append({"path": path, "body": body, "cast_to": cast_to})
-        return {"ok": True, "path": path, "body": body}
+        self.calls.append(
+            {
+                "path": path,
+                "body": body,
+                "cast_to": cast_to,
+                "kwargs": kwargs,
+            }
+        )
+        return {"ok": True, "body": body}
 
 
-class _PromptIdTestClient(OpenAIChatCompletionsTokenClient):
-    def __init__(self, full_prompt_ids: list[int]) -> None:
-        super().__init__(_NoopClient())
-        self._full_prompt_ids = full_prompt_ids
-
-    async def to_native_prompt(self, messages):  # type: ignore[override]
-        return cast(Any, messages), {}
-
-    async def tokenize(  # type: ignore[override]
-        self,
-        messages,
-        tools,
-        model,
-        extra_kwargs: dict = {},
-        **kwargs,
-    ) -> list[int]:
-        if isinstance(messages, str):
-            assert messages == "World!"
-            return [777]
-
-        if messages == [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "World!"},
-        ]:
-            assert extra_kwargs == {"add_generation_prompt": False}
-            return [1, 777, 999]
-
-        return self._full_prompt_ids
-
-
-class _NoTokenizeClient(OpenAIChatCompletionsTokenClient):
+class _FakeRenderer:
     def __init__(self) -> None:
-        super().__init__(_NoopClient())
+        self.render_calls: list[dict[str, Any]] = []
+        self.bridge_calls: list[dict[str, Any]] = []
+
+    def render(self, messages, *, tools=None, add_generation_prompt=False):
+        self.render_calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "add_generation_prompt": add_generation_prompt,
+            }
+        )
+        token_ids = _encode_messages(messages)
+        if add_generation_prompt:
+            token_ids.append(900)
+        return RenderedTokens(
+            token_ids=token_ids,
+            message_indices=_message_indices(messages, token_ids),
+        )
+
+    def bridge_to_next_turn(
+        self,
+        previous_prompt_ids,
+        previous_completion_ids,
+        new_messages,
+        *,
+        tools=None,
+    ):
+        self.bridge_calls.append(
+            {
+                "previous_prompt_ids": previous_prompt_ids,
+                "previous_completion_ids": previous_completion_ids,
+                "new_messages": new_messages,
+                "tools": tools,
+            }
+        )
+        token_ids = (
+            list(previous_prompt_ids)
+            + list(previous_completion_ids)
+            + _encode_messages(new_messages)
+            + [900]
+        )
+        return RenderedTokens(
+            token_ids=token_ids,
+            message_indices=[-1]
+            * (len(previous_prompt_ids) + len(previous_completion_ids))
+            + _message_indices(new_messages, token_ids),
+        )
+
+
+class _RendererTokenClient(OpenAIChatCompletionsTokenClient):
+    def __init__(self, recording_client: _RecordingClient, renderer: _FakeRenderer):
+        super().__init__(recording_client)
+        self._renderer = renderer
+        self.renderer = "auto"
 
     async def to_native_prompt(self, messages):  # type: ignore[override]
         return cast(Any, messages), {}
 
-    async def tokenize(  # type: ignore[override]
-        self,
-        messages,
-        tools,
-        model,
-        extra_kwargs: dict = {},
-        **kwargs,
-    ) -> list[int]:
-        raise AssertionError("tokenize should not be called without a prefix match")
+
+class _ResponseTokenClient(_RendererTokenClient):
+    async def raise_from_native_response(self, response):  # type: ignore[override]
+        return None
+
+    async def from_native_response(self, response):  # type: ignore[override]
+        return Response(
+            id="resp",
+            created=0,
+            model="test-model",
+            usage=Usage(
+                prompt_tokens=len(response["body"]["tokens"]),
+                reasoning_tokens=0,
+                completion_tokens=1,
+                total_tokens=len(response["body"]["tokens"]) + 1,
+            ),
+            message=ResponseMessage(
+                content="answer",
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=ResponseTokens(
+                    prompt_ids=list(response["body"]["tokens"]),
+                    prompt_mask=[0] * len(response["body"]["tokens"]),
+                    completion_ids=[777],
+                    completion_mask=[1],
+                    completion_logprobs=[-0.2],
+                ),
+            ),
+        )
 
 
-def _make_step(
-    prompt: list[dict[str, str]],
-    completion: list[dict[str, str]],
-    prompt_ids: list[int],
-    completion_ids: list[int],
-) -> dict[str, Any]:
-    return {
-        "prompt": prompt,
-        "completion": completion,
-        "tokens": {
-            "prompt_ids": prompt_ids,
-            "completion_ids": completion_ids,
-        },
-    }
+def _encode_messages(messages):
+    ids = []
+    for message in messages:
+        role_id = {"system": 10, "user": 20, "assistant": 30}.get(message["role"], 40)
+        ids.extend([role_id, len(str(message.get("content", "")))])
+    return ids
 
 
-@pytest.mark.asyncio
-async def test_get_prompt_ids_uses_largest_message_prefix_match():
-    client = _PromptIdTestClient(full_prompt_ids=[1, 2, 3, 4, 999, 5])
-    state = cast(
+def _message_indices(messages, token_ids):
+    indices = []
+    for i, _ in enumerate(messages):
+        indices.extend([i, i])
+    if len(indices) < len(token_ids):
+        indices.extend([-1] * (len(token_ids) - len(indices)))
+    return indices
+
+
+def _state(streams: StreamSet | None = None) -> State:
+    return cast(
         State,
         {
             "model": "test-model",
-            "trajectory": [
-                _make_step(
-                    prompt=[{"role": "user", "content": "u1"}],
-                    completion=[{"role": "assistant", "content": "a1"}],
-                    prompt_ids=[1],
-                    completion_ids=[2],
-                ),
-                _make_step(
-                    prompt=[
-                        {"role": "user", "content": "u1"},
-                        {"role": "assistant", "content": "a1"},
-                        {"role": "user", "content": "u2"},
-                    ],
-                    completion=[{"role": "assistant", "content": "a2"}],
-                    prompt_ids=[1, 2, 3],
-                    completion_ids=[4],
-                ),
-            ],
+            "trajectory": [],
+            RENDERER_STREAMS_STATE_KEY: streams or StreamSet(),
         },
     )
-    prompt_messages = cast(
+
+
+@pytest.mark.asyncio
+async def test_first_text_turn_uses_renderer_token_route():
+    recording_client = _RecordingClient()
+    renderer = _FakeRenderer()
+    client = _RendererTokenClient(recording_client, renderer)
+    prompt = cast(Any, [{"role": "user", "content": "u1"}])
+
+    response = await client.get_native_response(
+        prompt=prompt,
+        model="test-model",
+        sampling_args={},
+        tools=None,
+        state=_state(),
+    )
+
+    assert response["ok"] is True
+    assert recording_client.calls[0]["path"] == "/chat/completions/tokens"
+    assert recording_client.calls[0]["body"]["tokens"] == [20, 2, 900]
+    assert renderer.render_calls == [
+        {
+            "messages": [{"role": "user", "content": "u1"}],
+            "tools": None,
+            "add_generation_prompt": True,
+        }
+    ]
+    assert renderer.bridge_calls == []
+
+
+@pytest.mark.asyncio
+async def test_next_turn_uses_committed_stream_set_for_lineage():
+    recording_client = _RecordingClient()
+    renderer = _FakeRenderer()
+    client = _RendererTokenClient(recording_client, renderer)
+    prepared = StreamSet().prepare_append(
+        "debater_a",
+        [{"role": "user", "content": "u1"}],
+        renderer,
+    )
+    streams = StreamSet().commit_response(
+        "debater_a",
+        prepared,
+        CompletedResponse(
+            completion_ids=[101],
+            parsed=ParsedResponse(content="a1"),
+        ),
+    )
+    renderer.render_calls.clear()
+    prompt = cast(
         Any,
         [
             {"role": "user", "content": "u1"},
             {"role": "assistant", "content": "a1"},
             {"role": "user", "content": "u2"},
-            {"role": "assistant", "content": "a2"},
-            {"role": "user", "content": "u3"},
         ],
     )
 
-    prompt_ids = await client.get_prompt_ids(state, prompt_messages, oai_tools=None)
-
-    assert prompt_ids == [1, 2, 3, 4, 999, 5]
-
-
-@pytest.mark.asyncio
-async def test_get_prompt_ids_returns_none_when_no_prefix_match():
-    client = _NoTokenizeClient()
-    state = cast(
-        State,
-        {
-            "model": "test-model",
-            "trajectory": [
-                _make_step(
-                    prompt=[{"role": "user", "content": "old"}],
-                    completion=[{"role": "assistant", "content": "reply"}],
-                    prompt_ids=[1],
-                    completion_ids=[2],
-                )
-            ],
-        },
-    )
-
-    prompt_ids = await client.get_prompt_ids(
-        state,
-        cast(Any, [{"role": "user", "content": "new"}]),
-        oai_tools=None,
-    )
-
-    assert prompt_ids is None
-
-
-@pytest.mark.asyncio
-async def test_get_native_response_falls_back_to_super_when_no_prefix_match(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """No prefix match → fall back to the parent client's non-token path,
-    AND verify ``get_native_response`` threads explicit ``lineage_key``
-    into ``get_prompt_ids`` as a kwarg. The lineage key is the per-member
-    prefix-cache partition key added for multi-agent envs; a regression
-    that drops it would revert the cache to first-match behavior and
-    cross-contaminate across speakers."""
-    client = OpenAIChatCompletionsTokenClient(_NoopClient())
-    sentinel = {"source": "super"}
-    calls: list[dict[str, Any]] = []
-    prompt_ids_calls: list[dict[str, Any]] = []
-
-    async def fake_get_prompt_ids(self, state, prompt_messages, oai_tools, *, lineage_key=None):  # noqa: ANN001
-        prompt_ids_calls.append({"lineage_key": lineage_key, "state": state})
-        return None
-
-    async def fake_super_get_native_response(  # noqa: ANN001
-        self,
-        prompt,
-        model,
-        sampling_args,
-        tools=None,
-        **kwargs,
-    ):
-        calls.append(
-            {
-                "prompt": prompt,
-                "model": model,
-                "sampling_args": sampling_args,
-                "tools": tools,
-            }
-        )
-        return sentinel
-
-    monkeypatch.setattr(
-        OpenAIChatCompletionsTokenClient, "get_prompt_ids", fake_get_prompt_ids
-    )
-    monkeypatch.setattr(
-        OpenAIChatCompletionsClient,
-        "get_native_response",
-        fake_super_get_native_response,
-    )
-
-    state = cast(
-        State,
-        {
-            "model": "test-model",
-            "trajectory": [
-                _make_step(
-                    prompt=[{"role": "user", "content": "u1"}],
-                    completion=[{"role": "assistant", "content": "a1"}],
-                    prompt_ids=[1],
-                    completion_ids=[2],
-                )
-            ],
-        },
-    )
-    prompt = cast(Any, [{"role": "user", "content": "u2"}])
-
-    response = await client.get_native_response(
+    await client.get_native_response(
         prompt=prompt,
         model="test-model",
         sampling_args={},
         tools=None,
-        state=state,
+        state=_state(streams),
         lineage_key="debater_a",
     )
 
-    assert response is sentinel
-    assert len(calls) == 1
-    assert calls[0]["prompt"] == prompt
-    # lineage_key was threaded into get_prompt_ids on the fallback branch.
-    assert len(prompt_ids_calls) == 1
-    assert prompt_ids_calls[0]["lineage_key"] == "debater_a"
-
-
-@pytest.mark.asyncio
-async def test_get_native_response_lineage_key_absent_when_state_lacks_it(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Single-agent envs don't pass lineage_key; it must default to None
-    so ``get_prompt_ids`` falls back to the unfiltered legacy behavior."""
-    client = OpenAIChatCompletionsTokenClient(_NoopClient())
-    prompt_ids_calls: list[dict[str, Any]] = []
-
-    async def fake_get_prompt_ids(self, state, prompt_messages, oai_tools, *, lineage_key=None):  # noqa: ANN001
-        prompt_ids_calls.append({"lineage_key": lineage_key})
-        return None
-
-    async def fake_super_get_native_response(  # noqa: ANN001
-        self, prompt, model, sampling_args, tools=None, **kwargs
-    ):
-        return {"source": "super"}
-
-    monkeypatch.setattr(
-        OpenAIChatCompletionsTokenClient, "get_prompt_ids", fake_get_prompt_ids
-    )
-    monkeypatch.setattr(
-        OpenAIChatCompletionsClient,
-        "get_native_response",
-        fake_super_get_native_response,
-    )
-
-    state = cast(
-        State,
+    assert recording_client.calls[0]["body"]["tokens"] == [20, 2, 900, 101, 20, 2, 900]
+    assert renderer.render_calls == []
+    assert renderer.bridge_calls == [
         {
-            "model": "test-model",
-            "trajectory": [
-                _make_step(
-                    prompt=[{"role": "user", "content": "u1"}],
-                    completion=[{"role": "assistant", "content": "a1"}],
-                    prompt_ids=[1],
-                    completion_ids=[2],
-                )
-            ],
-        },
-    )
-    await client.get_native_response(
-        prompt=cast(Any, [{"role": "user", "content": "u2"}]),
-        model="test-model",
-        sampling_args={},
-        tools=None,
-        state=state,
-    )
-    assert len(prompt_ids_calls) == 1
-    assert prompt_ids_calls[0]["lineage_key"] is None
+            "previous_prompt_ids": [20, 2, 900],
+            "previous_completion_ids": [101],
+            "new_messages": [{"role": "user", "content": "u2"}],
+            "tools": None,
+        }
+    ]
 
 
 @pytest.mark.asyncio
-async def test_get_native_response_uses_token_route_when_prompt_ids_available(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Prefix match → token route, AND verify explicit lineage_key is
-    threaded into ``get_prompt_ids``. Unlike the fallback test this
-    exercises the success branch."""
+async def test_get_response_carries_prepared_turn_for_commit():
     recording_client = _RecordingClient()
-    client = OpenAIChatCompletionsTokenClient(recording_client)
-    prompt_ids_calls: list[dict[str, Any]] = []
+    renderer = _FakeRenderer()
+    client = _ResponseTokenClient(recording_client, renderer)
+    prompt = [{"role": "user", "content": "u1"}]
 
-    async def fake_get_prompt_ids(self, state, prompt_messages, oai_tools, *, lineage_key=None):  # noqa: ANN001
-        prompt_ids_calls.append({"lineage_key": lineage_key})
-        return [10, 20]
-
-    monkeypatch.setattr(
-        OpenAIChatCompletionsTokenClient, "get_prompt_ids", fake_get_prompt_ids
-    )
-
-    state = cast(
-        State,
-        {
-            "model": "test-model",
-            "trajectory": [
-                _make_step(
-                    prompt=[{"role": "user", "content": "u1"}],
-                    completion=[{"role": "assistant", "content": "a1"}],
-                    prompt_ids=[1],
-                    completion_ids=[2],
-                )
-            ],
-        },
-    )
-    prompt = cast(Any, [{"role": "user", "content": "u2"}])
-
-    response = await client.get_native_response(
-        prompt=prompt,
+    response = await client.get_response(
+        prompt=cast(Any, prompt),
         model="test-model",
         sampling_args={},
-        tools=None,
-        state=state,
-        lineage_key="debater_b",
+        state=_state(),
     )
+    tokens = await parse_response_tokens(response)
 
-    assert response["ok"] is True
-    assert len(recording_client.calls) == 1
-    assert recording_client.calls[0]["path"] == "/chat/completions/tokens"
-    assert recording_client.calls[0]["body"]["tokens"] == [10, 20]
-    # lineage_key plumbing holds on the success branch too.
-    assert len(prompt_ids_calls) == 1
-    assert prompt_ids_calls[0]["lineage_key"] == "debater_b"
+    assert response.message.renderer_stream_id == "default"
+    assert response.message.renderer_prepared_turn is not None
+    assert response.message.tokens is not None
+    assert response.message.tokens.prompt_message_indices == [0, 0, -1]
+    assert tokens is not None
+    assert tokens["prompt_message_indices"] == [0, 0, -1]
+
+    streams = commit_rendered_step(
+        StreamSet(),
+        {
+            "prompt": cast(Any, prompt),
+            "completion": [{"role": "assistant", "content": "answer"}],
+            "response": response,
+            "tokens": tokens,
+            "reward": None,
+            "advantage": None,
+            "is_truncated": False,
+            "trajectory_id": "traj",
+            "extras": {},
+        },
+    )
+    stream = streams.get("default")
+    assert stream is not None
+    assert stream.prompt_message_indices == (0, 0, -1)
+    assert stream.token_ids == (20, 2, 900, 777)
