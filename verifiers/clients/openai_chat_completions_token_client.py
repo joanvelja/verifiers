@@ -19,6 +19,7 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAITool,
     handle_openai_overlong_prompt,
 )
+from verifiers.api_profile import ApiProfile
 from verifiers.types import SamplingArgs, State
 
 
@@ -65,6 +66,8 @@ class TokenizeResponse(BaseModel):
 
 class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
     """Wrapper for custom vLLM route /v1/chat/completions/tokens via AsyncOpenAI client."""
+
+    _default_profile: ApiProfile = ApiProfile.VLLM_PERMISSIVE
 
     @property
     def token_client(self) -> AsyncOpenAI:

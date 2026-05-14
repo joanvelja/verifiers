@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import Any, Protocol, runtime_checkable
 
 from verifiers.types import RolloutOutput
+from verifiers.utils.data_utils import canonical_example_id
 
 
 @runtime_checkable
@@ -165,7 +166,7 @@ class PassAtKMetric:
         if not self._k_values:
             return
 
-        example_id = output.get("example_id", 0)
+        example_id = canonical_example_id(output.get("example_id", 0))
         self._example_counts[example_id] += 1
         if output.get("reward", 0.0) >= self.threshold:
             self._example_correct[example_id] += 1
@@ -190,8 +191,8 @@ class PassAtKMetric:
             self.add_output(output)
 
     def reset(self) -> None:
-        self._example_counts: dict[int, int] = defaultdict(int)
-        self._example_correct: dict[int, int] = defaultdict(int)
+        self._example_counts: dict[str, int] = defaultdict(int)
+        self._example_correct: dict[str, int] = defaultdict(int)
         self._num_complete = 0
         self._pass_at_k_sums: dict[str, float] = defaultdict(float)
         self._pass_all_k_sums: dict[str, float] = defaultdict(float)

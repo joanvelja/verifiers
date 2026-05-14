@@ -20,6 +20,11 @@ BOXED_SYSTEM_PROMPT = (
 ###############
 
 
+def canonical_example_id(example_id: object) -> str:
+    """Canonical key for grouping/sorting outputs by example identity."""
+    return str(example_id)
+
+
 def format_dataset(
     dataset: "Dataset",
     system_prompt: str | None = None,

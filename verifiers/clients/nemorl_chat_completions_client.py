@@ -1,5 +1,6 @@
 from typing import Any, cast
 
+from verifiers.api_profile import ApiProfile
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
     OpenAIChatMessages,
@@ -21,6 +22,8 @@ class NeMoRLChatCompletionsClient(OpenAIChatCompletionsClient):
     Client for NeMo Gym vllm_model server.
     Formats requests for NeMo RL's server-side vLLM retokenization fix, and translates to verifiers format.
     """
+
+    _default_profile: ApiProfile = ApiProfile.NEMORL
 
     @handle_openai_overlong_prompt
     async def get_native_response(

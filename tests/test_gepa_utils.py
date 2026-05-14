@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 
+from verifiers.gepa.display import GEPADisplay
 from verifiers.gepa.gepa_utils import save_gepa_results
 
 
@@ -153,3 +154,19 @@ def test_save_gepa_results_writes_candidate_diffs_and_frontier(tmp_path):
         },
     ]
     assert "system_prompt" not in frontier_rows[0]["best_candidates"][0]
+
+
+def test_gepa_display_canonicalizes_mixed_example_ids():
+    display = GEPADisplay(
+        env_id="wordle",
+        model="m",
+        reflection_model="r",
+        valset_example_ids=[7, "8"],
+    )
+
+    display.update_eval(candidate_idx=0, scores=[1.0, 0.0], example_ids=["7", 8])
+    display.update_eval(candidate_idx=1, scores=[0.5, 1.0], example_ids=[7, "8"])
+
+    assert sorted(display.state.valset_rows) == ["7", "8"]
+    assert display.state.valset_rows["7"].best_score == 1.0
+    assert display.state.valset_rows["8"].best_score == 1.0

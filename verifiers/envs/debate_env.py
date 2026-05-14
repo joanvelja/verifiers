@@ -246,7 +246,7 @@ class DebateEnv(MultiAgentEnv):
         """Render one opponent utterance as a user message for ``viewer_id``.
 
         Selects raw vs. public channel per visibility_policy and wraps with
-        speaker attribution. Shared by ``build_prompt`` and ``_format_history``.
+        speaker attribution.
 
         Quarantined utterances (``parse_error`` set, including empty-public
         commits from reasoning-mode budget exhaustion) render as a single
@@ -412,23 +412,6 @@ class DebateEnv(MultiAgentEnv):
         prefill = self.prompts.render_prefill(member_id, slot.phase, ctx_current)
         if prefill:
             msgs.append(AssistantMessage(content=prefill))
-        return msgs
-
-    def _format_history(
-        self, kernel_state: KernelState, viewer_id: str
-    ) -> list[Message]:
-        """Format transcript entries for ``viewer_id``.
-
-        Own utterances → assistant role, ``raw_content`` verbatim (KV cache
-        coherence). Others → user role, content selected by
-        :meth:`visibility_policy` and wrapped with speaker attribution.
-        """
-        msgs: list[Message] = []
-        for utt in kernel_state.transcript:
-            if utt.member_id == viewer_id:
-                msgs.append(AssistantMessage(content=utt.raw_content))
-            else:
-                msgs.append(self._render_opponent_message(utt, viewer_id))
         return msgs
 
     # -- field extraction ----------------------------------------------------

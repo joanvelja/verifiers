@@ -17,12 +17,14 @@ from verifiers.types import (
     GenerateOutputs,
     MARScore,
     Response,
+    RESERVED_ROLLOUT_OUTPUT_KEYS,
     RolloutOutput,
     SamplingArgs,
     State,
     TokenUsage,
     Tool,
 )
+from verifiers.utils.data_utils import canonical_example_id
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import (
     sanitize_tool_calls,
@@ -47,28 +49,12 @@ from verifiers.utils.version_utils import get_version_info
 
 logger = logging.getLogger(__name__)
 
-_RESERVED_STATE_COLUMN_KEYS = {
-    "answer",
-    "completion",
-    "error",
-    "error_chain",
-    "example_id",
-    "info",
-    "is_completed",
-    "is_truncated",
-    "long_error_chain",
-    "mar_score",
-    "metrics",
-    "prompt",
-    "reward",
-    "sampling_args",
-    "stop_condition",
-    "task",
-    "timing",
-    "token_usage",
-    "tool_defs",
-    "trajectory_id",
-}
+_STANDARD_STATE_COLUMNS_ALLOWED_BY_NAME = frozenset(
+    {"trajectory", "sampling_args", "trajectory_id"}
+)
+_RESERVED_STATE_COLUMN_KEYS = (
+    RESERVED_ROLLOUT_OUTPUT_KEYS - _STANDARD_STATE_COLUMNS_ALLOWED_BY_NAME
+)
 
 
 def is_json_serializable(value: object) -> bool:
@@ -321,6 +307,8 @@ def state_to_output(
             output["metrics"] = {}
     # add state columns (must be serializable)
     for col in state_columns or []:
+        if col in _STANDARD_STATE_COLUMNS_ALLOWED_BY_NAME and col != "trajectory":
+            continue
         if col in _RESERVED_STATE_COLUMN_KEYS:
             raise ValueError(
                 f"state_columns value '{col}' conflicts with a standard output "
@@ -678,7 +666,10 @@ class GenerateOutputsBuilder:
     def build_outputs(self, sort_by_example_id: bool = False) -> list[RolloutOutput]:
         """Return (sorted) accumulated outputs"""
         if sort_by_example_id:
-            return sorted(self.outputs, key=lambda o: o.get("example_id", 0))
+            return sorted(
+                self.outputs,
+                key=lambda o: canonical_example_id(o.get("example_id", 0)),
+            )
         return self.outputs
 
     def build(self, sort_by_example_id: bool = False) -> GenerateOutputs:
@@ -785,14 +776,15 @@ def save_outputs(outputs: list[RolloutOutput], results_path: Path, mode: str = "
     outputs_path = results_path / "results.jsonl"
     with open(outputs_path, mode) as f:
         for idx, output in enumerate(outputs):
-            example_id = output.get("example_id") or "unknown"
+            example_id = output.get("example_id", "unknown")
             try:
                 json.dump(output, f, default=make_serializable)
                 f.write("\n")
             except Exception as e:
-                logger.error(
+                logger.exception(
                     f"Failed to save result with index {idx} ({example_id=}): {e}"
                 )
+                raise
 
 
 def _get_last_nonempty_line_bounds(file_obj: Any) -> tuple[int, bytes] | None:

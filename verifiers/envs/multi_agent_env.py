@@ -22,6 +22,7 @@ shape that warrants a sibling of MultiTurnEnv, not a subclass.
 import asyncio
 import logging
 import re
+import time
 from abc import abstractmethod
 from typing import Any, Callable, Literal, final
 
@@ -283,6 +284,7 @@ class MultiAgentEnv(vf.Environment):
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
+        state["timing"].generation.start = time.time()
         try:
             state["_kernel"] = KernelState(slot_index=0)
 
@@ -303,9 +305,9 @@ class MultiAgentEnv(vf.Environment):
 
             await self.render_completion(state)
             return state
-        except asyncio.CancelledError:
+        finally:
+            state["timing"].generation.end = time.time()
             await self.cleanup(state)
-            raise
 
     @final
     async def _run_sequential_slot(self, state: State, slot: TurnSlot) -> None:

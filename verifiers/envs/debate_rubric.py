@@ -180,9 +180,8 @@ class DebateRubric(MultiAgentRubric):
         judge_model: str = "gpt-4.1-nano",
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(members=members, **kwargs)
         self.truth_member = truth_member
-        self.members = members
         self.prompts = prompts
         self.grader = maybe_judge(prompts, "grader", judge_client, judge_model)
         self.matcher = maybe_judge(prompts, "matcher", judge_client, judge_model)

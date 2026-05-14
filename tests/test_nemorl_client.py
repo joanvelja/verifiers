@@ -5,6 +5,7 @@ import pytest
 from verifiers.clients.nemorl_chat_completions_client import (
     NeMoRLChatCompletionsClient,
 )
+from verifiers.api_profile import ApiProfile
 from verifiers.types import ClientConfig
 
 
@@ -54,6 +55,52 @@ def _make_client() -> NeMoRLChatCompletionsClient:
     )
     client = NeMoRLChatCompletionsClient(config)
     return client
+
+
+class _CreateRecorder:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def create(self, **kwargs):
+        from openai.types.chat import ChatCompletion
+
+        self.calls.append(kwargs)
+        return ChatCompletion.model_validate(_make_nemo_gym_response_dict())
+
+
+class _ChatRecorder:
+    def __init__(self) -> None:
+        self.completions = _CreateRecorder()
+
+
+class _RecordingClient:
+    base_url = "http://localhost:8080/v1"
+
+    def __init__(self) -> None:
+        self.chat = _ChatRecorder()
+
+
+@pytest.mark.asyncio
+async def test_nemorl_profile_preserves_vllm_sampling_args():
+    recording_client = _RecordingClient()
+    client = NeMoRLChatCompletionsClient(recording_client)
+
+    assert client.profile is ApiProfile.NEMORL
+
+    await client.get_native_response(
+        prompt=[{"role": "user", "content": "Hi"}],
+        model="test-model",
+        sampling_args={
+            "top_k": 20,
+            "min_p": 0.1,
+            "extra_body": {"repetition_penalty": 1.1},
+        },
+    )
+
+    call = recording_client.chat.completions.calls[0]
+    assert call["top_k"] == 20
+    assert call["min_p"] == 0.1
+    assert call["extra_body"] == {"repetition_penalty": 1.1}
 
 
 @pytest.mark.asyncio

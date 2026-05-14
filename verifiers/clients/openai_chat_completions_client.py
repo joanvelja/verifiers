@@ -33,7 +33,6 @@ from openai.types.chat.chat_completion_user_message_param import (
 from openai.types.shared_params import FunctionDefinition
 
 from verifiers.api_profile import (
-    ApiProfile,
     filter_sampling_args_for_profile,
 )
 from verifiers.clients.client import Client
@@ -163,8 +162,6 @@ class OpenAIChatCompletionsClient(
     ``profile=ApiProfile.VLLM_PERMISSIVE`` at construction (or set it on
     ``ClientConfig.profile``) to opt back in.
     """
-
-    _default_profile: ApiProfile = ApiProfile.OPENAI_STRICT
 
     # Tracks stripped keys already warned about so a single misconfig
     # surfaces once per client lifetime instead of spamming per request.

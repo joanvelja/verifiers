@@ -1022,7 +1022,7 @@ class MemberScore(CustomBaseModel):
     metrics: dict[str, float] = Field(default_factory=dict)
 
 
-_RESERVED_FLAT_KEYS: frozenset[str] = frozenset(
+RESERVED_ROLLOUT_OUTPUT_KEYS: frozenset[str] = frozenset(
     {
         "example_id",
         "task",
@@ -1043,8 +1043,12 @@ _RESERVED_FLAT_KEYS: frozenset[str] = frozenset(
         "mar_score",
         "trajectory_id",
         "sampling_args",
+        "error_chain",
+        "long_error_chain",
     }
 )
+
+_RESERVED_FLAT_KEYS = RESERVED_ROLLOUT_OUTPUT_KEYS
 
 
 class MARScore(CustomBaseModel):

@@ -31,6 +31,7 @@ from verifiers.utils.save_utils import (
     load_outputs,
     make_serializable,
     save_new_outputs,
+    save_outputs,
     states_to_outputs,
     validate_resume_metadata,
 )
@@ -197,6 +198,28 @@ class TestSavingMetadata:
         assert (
             metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
         )
+
+    def test_generate_outputs_builder_sorts_mixed_example_ids(self):
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=3,
+            rollouts_per_example=1,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+        )
+        builder.add_outputs(
+            [
+                {"example_id": 10, "reward": 1.0},
+                {"example_id": "2", "reward": 1.0},
+                {"example_id": 1, "reward": 1.0},
+            ]
+        )
+
+        assert [o["example_id"] for o in builder.build_outputs(True)] == [1, 10, "2"]
 
 
 class TestSavingResults:
@@ -445,6 +468,20 @@ class TestSavingResults:
         with pytest.raises(ValueError, match="standard output field"):
             states_to_outputs(states, state_columns=["token_usage"])
 
+    def test_prime_rl_required_state_columns_are_allowed(self, make_state):
+        state = make_state()
+        state["trajectory"] = []
+        state["sampling_args"] = {"temperature": 0.7}
+        state["trajectory_id"] = "episode-1"
+
+        output = states_to_outputs(
+            [state], state_columns=["trajectory", "sampling_args", "trajectory_id"]
+        )[0]
+
+        assert output["trajectory"] == []
+        assert output["sampling_args"] == {"temperature": 0.7}
+        assert output["trajectory_id"] == "episode-1"
+
 
 class TestLoadOutputs:
     def test_ignores_malformed_trailing_line(self, tmp_path: Path):
@@ -518,6 +555,24 @@ class TestSaveNewOutputs:
             1,
             3,
         ]
+
+    def test_save_outputs_raises_on_unserializable_row(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        bad_output = {"example_id": 0}
+        bad_output["cycle"] = bad_output
+
+        with pytest.raises(ValueError, match="Circular reference"):
+            save_outputs([bad_output], results_path)
+
+    def test_save_new_outputs_raises_on_unserializable_row(self, tmp_path: Path):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        (results_path / "results.jsonl").write_text("", encoding="utf-8")
+        bad_output = {"example_id": 0}
+        bad_output["cycle"] = bad_output
+
+        with pytest.raises(ValueError, match="Circular reference"):
+            save_new_outputs([bad_output], results_path)
 
 
 class TestResumeMetadataValidation:
@@ -910,6 +965,22 @@ class TestPassAtKMetric:
         m.add_outputs([self._make_output(0, 1.0) for _ in range(3)])
         pass_at_k, _ = m.compute()
         assert set(pass_at_k.keys()) == {"1", "2"}
+
+    def test_mixed_numeric_and_string_example_ids_share_accounting_key(self):
+        m = PassAtKMetric(rollouts_per_example=2)
+
+        m.add_outputs(
+            [
+                {"example_id": 7, "reward": 1.0},
+                {"example_id": "7", "reward": 0.0},
+            ]
+        )
+
+        pass_at_k, pass_all_k = m.compute()
+        assert pass_at_k["1"] == pytest.approx(0.5)
+        assert pass_at_k["2"] == pytest.approx(1.0)
+        assert pass_all_k["1"] == pytest.approx(0.5)
+        assert pass_all_k["2"] == pytest.approx(0.0)
 
     def test_correctness_threshold_boundary(self):
         """Only reward >= 0.5 counts as correct by default."""

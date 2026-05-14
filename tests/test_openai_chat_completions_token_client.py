@@ -6,6 +6,7 @@ from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletio
 from verifiers.clients.openai_chat_completions_token_client import (
     OpenAIChatCompletionsTokenClient,
 )
+from verifiers.api_profile import ApiProfile
 from verifiers.types import State
 
 
@@ -25,6 +26,25 @@ class _RecordingClient(_NoopClient):
     ) -> Any:
         self.calls.append({"path": path, "body": body, "cast_to": cast_to})
         return {"ok": True, "path": path, "body": body}
+
+
+class _CreateRecorder:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        return {"ok": True, "kwargs": kwargs}
+
+
+class _ChatRecorder:
+    def __init__(self) -> None:
+        self.completions = _CreateRecorder()
+
+
+class _FallbackRecordingClient(_NoopClient):
+    def __init__(self) -> None:
+        self.chat = _ChatRecorder()
 
 
 class _PromptIdTestClient(OpenAIChatCompletionsTokenClient):
@@ -89,6 +109,27 @@ def _make_step(
             "completion_ids": completion_ids,
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_token_client_first_turn_fallback_preserves_return_token_ids() -> None:
+    recording_client = _FallbackRecordingClient()
+    client = OpenAIChatCompletionsTokenClient(recording_client)
+
+    assert client.profile is ApiProfile.VLLM_PERMISSIVE
+
+    await client.get_native_response(
+        prompt=cast(Any, [{"role": "user", "content": "hello"}]),
+        model="test-model",
+        sampling_args={"top_k": 20, "min_p": 0.1},
+        tools=None,
+        state=cast(State, {"model": "test-model", "trajectory": []}),
+    )
+
+    call = recording_client.chat.completions.calls[0]
+    assert call["top_k"] == 20
+    assert call["min_p"] == 0.1
+    assert call["extra_body"]["return_token_ids"] is True
 
 
 @pytest.mark.asyncio

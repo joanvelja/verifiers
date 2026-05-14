@@ -27,7 +27,8 @@ class ApiProfile(str, Enum):
 
     VLLM_PERMISSIVE = "vllm_permissive"
     """vLLM's OpenAI-compatible server: accepts top_k, min_p, cache_salt,
-    return_token_ids, repetition_penalty, min_tokens, best_of via extra_body."""
+    return_token_ids, repetition_penalty, min_tokens, best_of, and guided
+    decoding keys via extra_body."""
 
     ANTHROPIC = "anthropic"
     """Anthropic messages API (kwargs normalized by AnthropicMessagesClient)."""
@@ -45,6 +46,11 @@ VLLM_ONLY_EXTRA_BODY_KEYS: frozenset[str] = frozenset(
         "repetition_penalty",
         "min_tokens",
         "best_of",
+        "guided_json",
+        "guided_regex",
+        "guided_choice",
+        "guided_grammar",
+        "structural_tag",
     }
 )
 

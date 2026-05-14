@@ -55,32 +55,6 @@ from verifiers.types import (
 )
 from verifiers.utils.client_utils import setup_openai_client
 
-# Module-level bridge counters. Incremented by every RendererClient instance
-# that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's
-# orchestrator) can read and reset these per training step to surface a
-# bridge_break_rate metric.
-_bridge_metrics_lock = threading.Lock()
-_bridge_metrics: dict[str, int] = {"attempts": 0, "successes": 0, "failures": 0}
-
-
-def get_bridge_metrics() -> dict[str, int]:
-    """Snapshot the in-memory bridge counters (attempts/successes/failures)."""
-    with _bridge_metrics_lock:
-        return dict(_bridge_metrics)
-
-
-def reset_bridge_metrics() -> None:
-    """Zero the in-memory bridge counters."""
-    with _bridge_metrics_lock:
-        for k in _bridge_metrics:
-            _bridge_metrics[k] = 0
-
-
-def _record_bridge(success: bool) -> None:
-    with _bridge_metrics_lock:
-        _bridge_metrics["attempts"] += 1
-        _bridge_metrics["successes" if success else "failures"] += 1
-
 
 # Size 1 by default. HF fast tokenizers encode a short chat prompt in a few
 # tens of microseconds, so even 2k rollouts tokenize serially in ~100ms — far
@@ -256,19 +230,6 @@ def _is_valid_incremental_tail(messages: list[RendererMessage]) -> bool:
     return all(role == "tool" for role in roles)
 
 
-def _step_is_truncated(step: Any) -> bool:
-    if bool(_get_value(step, "is_truncated", False)):
-        return True
-
-    tokens = _get_value(step, "tokens")
-    if tokens is not None and bool(_get_value(tokens, "is_truncated", False)):
-        return True
-
-    response = _get_value(step, "response")
-    message = _get_value(response, "message")
-    return bool(_get_value(message, "is_truncated", False))
-
-
 def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
     # Prefer step.tokens (post-parse_response_tokens) when populated. In
     # multi-turn rollouts, parse_response_tokens zeroes out completion_ids
@@ -331,10 +292,9 @@ def _step_lineage_keys(step: Any) -> set[str]:
 
     extras = _get_value(step, "extras")
     if isinstance(extras, Mapping):
-        for name in ("renderer_stream_id", "member_id"):
-            key = _lineage_key(extras.get(name))
-            if key is not None:
-                keys.add(key)
+        key = _lineage_key(extras.get("member_id"))
+        if key is not None:
+            keys.add(key)
 
     key = _lineage_key(_get_value(step, "trajectory_id"))
     if key is not None:
@@ -430,7 +390,6 @@ async def _get_incremental_prompt_ids(
                 tools=tools,
             )
         bridged = await _maybe_offload(renderer, bridge)
-        _record_bridge(success=bridged is not None)
         return bridged
 
     return None

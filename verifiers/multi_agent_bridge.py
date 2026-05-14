@@ -66,6 +66,13 @@ def rollout_to_member_rollouts(
             "out-of-sync — silently dropping these steps would corrupt "
             "training data"
         )
+    missing_members = expected_members - set(steps_by_member)
+    if missing_members and rollout_error is None:
+        raise ValueError(
+            f"MARScore member_id(s) {sorted(missing_members)} have no trajectory "
+            "steps, but the rollout did not record an error; emitting empty "
+            "member trajectories would silently corrupt training data"
+        )
 
     return [
         MemberRollout(
