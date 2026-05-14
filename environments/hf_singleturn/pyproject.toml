@@ -16,3 +16,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = ["hf_singleturn.py", "pyproject.toml", "README.md"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
