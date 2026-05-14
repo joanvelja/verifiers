@@ -58,7 +58,7 @@ def _format_row(row: dict, rng: random.Random) -> dict:
         ],
         "answer": truth_letter,
         "example_id": str(row.get("Record ID") or f"gpqa_{rng.random():.10f}"),
-        "task": "gpqa_rlvr",
+        "info": {"env_id": "gpqa_rlvr"},
     }
 
 

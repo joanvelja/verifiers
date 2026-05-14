@@ -123,7 +123,7 @@ def _format_row(
     truth_letter = LETTERS[choices.index(correct)]
     body = "\n".join(f"{L}) {c}" for L, c in zip(LETTERS, choices))
     example_id = str(row.get("Record ID") or f"gpqa_{rng.random():.10f}")
-    info: vf.ConfigData = {}
+    info: vf.ConfigData = {"env_id": "gpqa_debate"}
     if seat_mode is not None:
         info["learner_seat"] = _pick_learner_seat(
             example_idx=example_idx,
@@ -144,7 +144,6 @@ def _format_row(
         ],
         "answer": truth_letter,
         "example_id": example_id,
-        "task": "gpqa_debate",
         "info": info,
     }
 

@@ -47,6 +47,29 @@ from verifiers.utils.version_utils import get_version_info
 
 logger = logging.getLogger(__name__)
 
+_RESERVED_STATE_COLUMN_KEYS = {
+    "answer",
+    "completion",
+    "error",
+    "error_chain",
+    "example_id",
+    "info",
+    "is_completed",
+    "is_truncated",
+    "long_error_chain",
+    "mar_score",
+    "metrics",
+    "prompt",
+    "reward",
+    "sampling_args",
+    "stop_condition",
+    "task",
+    "timing",
+    "token_usage",
+    "tool_defs",
+    "trajectory_id",
+}
+
 
 def is_json_serializable(value: object) -> bool:
     """Check if a value is JSON-serializable without conversion.
@@ -298,6 +321,12 @@ def state_to_output(
             output["metrics"] = {}
     # add state columns (must be serializable)
     for col in state_columns or []:
+        if col in _RESERVED_STATE_COLUMN_KEYS:
+            raise ValueError(
+                f"state_columns value '{col}' conflicts with a standard output "
+                "field. Standard fields are saved automatically; choose a "
+                "different state column name."
+            )
         value = state.get(col)
         if col == "trajectory":
             # Renderer multimodal rollouts accumulate mm_data on every step

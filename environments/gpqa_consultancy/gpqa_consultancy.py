@@ -105,11 +105,11 @@ def _format_row(row: dict, rng: random.Random, p_correct: float) -> dict:
         "answer": truth_letter,
         # info threads the assignment + truth through to the rubric.
         "info": {
+            "env_id": "gpqa_consultancy",
             "assigned_answer": assigned_letter,
             "assigned_correct": assigned_letter == truth_letter,
         },
         "example_id": str(row.get("Record ID") or f"gpqa_consult_{rng.random():.10f}"),
-        "task": "gpqa_consultancy",
     }
 
 
@@ -172,7 +172,7 @@ class _ConsultancyRubric(Rubric):
         argument = self.parser.parse_answer(completion) or ""
         judge_msg = _JUDGE_PROMPT.format(question=question, response=argument)
         response = await self.judge_client.get_response(
-            prompt=[{"role": "user", "content": judge_msg}],
+            prompt=[vf.UserMessage(content=judge_msg)],
             model=self.judge_model,
             sampling_args={"temperature": 0.0, "max_tokens": 4},
         )

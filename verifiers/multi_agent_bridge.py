@@ -47,7 +47,7 @@ def rollout_to_member_rollouts(
             "trajectory missing from RolloutOutput — the multi-agent "
             "bridge requires per-step trajectory data. Add 'trajectory' "
             "to state_columns when saving outputs for training (e.g. "
-            "``--state-columns trajectory,mar_score``)."
+            "``--state-columns trajectory``)."
         )
 
     # vf-eval doesn't always populate temperature in saved metadata when

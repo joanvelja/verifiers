@@ -433,6 +433,18 @@ class TestSavingResults:
         with pytest.raises(ValueError, match="not JSON-serializable"):
             states_to_outputs(states, state_columns=["client"])
 
+    def test_reserved_state_column_raises(self, make_state):
+        """state_columns must not overwrite standard rollout output fields."""
+        states = [
+            make_state(
+                prompt=[{"role": "user", "content": "test"}],
+                completion=[{"role": "assistant", "content": "test"}],
+            ),
+        ]
+
+        with pytest.raises(ValueError, match="standard output field"):
+            states_to_outputs(states, state_columns=["token_usage"])
+
 
 class TestLoadOutputs:
     def test_ignores_malformed_trailing_line(self, tmp_path: Path):
