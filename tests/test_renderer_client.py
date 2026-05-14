@@ -395,6 +395,103 @@ async def test_get_incremental_prompt_ids_accepts_tool_then_user_tail():
 
 
 @pytest.mark.asyncio
+async def test_get_incremental_prompt_ids_partitions_by_lineage_key():
+    renderer = _BridgeRenderer()
+    prompt_messages = [SystemMessage(content="s"), UserMessage(content="u")]
+    completion_messages = [AssistantMessage(content="a")]
+    prompt = [
+        *[_to_renderer_message(m) for m in prompt_messages + completion_messages],
+        _to_renderer_message(UserMessage(content="continue")),
+    ]
+    state = {
+        "trajectory": [
+            {
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [1],
+                    "completion_ids": [2, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+                "trajectory_id": "episode-1",
+                "extras": {"member_id": "agent_a"},
+            },
+            {
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [7],
+                    "completion_ids": [8, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+                "trajectory_id": "episode-1",
+                "extras": {"member_id": "agent_b"},
+            },
+        ]
+    }
+
+    result = await _get_incremental_prompt_ids(
+        renderer=renderer,
+        prompt=prompt,
+        state=state,
+        tools=None,
+        lineage_key="agent_a",
+    )
+
+    assert result is not None
+    assert result.token_ids[:3] == [1, 2, 99]
+
+
+@pytest.mark.asyncio
+async def test_get_incremental_prompt_ids_uses_state_trajectory_id_as_stream_key():
+    renderer = _BridgeRenderer()
+    prompt_messages = [SystemMessage(content="s"), UserMessage(content="u")]
+    completion_messages = [AssistantMessage(content="a")]
+    prompt = [
+        *[_to_renderer_message(m) for m in prompt_messages + completion_messages],
+        _to_renderer_message(UserMessage(content="continue")),
+    ]
+    state = {
+        "trajectory_id": "child-a",
+        "trajectory": [
+            {
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [7],
+                    "completion_ids": [8, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+                "trajectory_id": "child-b",
+                "extras": {},
+            },
+            {
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [1],
+                    "completion_ids": [2, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+                "trajectory_id": "child-a",
+                "extras": {},
+            },
+        ],
+    }
+
+    result = await _get_incremental_prompt_ids(
+        renderer=renderer, prompt=prompt, state=state, tools=None
+    )
+
+    assert result is not None
+    assert result.token_ids[:3] == [1, 2, 99]
+
+
+@pytest.mark.asyncio
 async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
     renderer = _BridgeRenderer(bridge_base=[10, 99], bridge_full=[10, 99, 40, 50])
     prompt_messages = [
