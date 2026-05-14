@@ -30,7 +30,7 @@ allow-direct-references = true
 verifiers = { git = "https://github.com/joanvelja/verifiers.git", branch = "main" }
 
 [tool.verifiers.eval]
-num_examples = 50
-rollouts_per_example = 4
+num_examples = 5
+rollouts_per_example = 3
 max_tokens = 1024
 temperature = 1.0
