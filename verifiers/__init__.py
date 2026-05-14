@@ -17,6 +17,7 @@ from .decorators import (  # noqa # isort: skip
     teardown,
     update,
 )
+from .multi_agent_bridge import rollout_to_member_rollouts  # noqa # isort: skip
 from .types import DatasetBuilder, State  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
@@ -117,6 +118,7 @@ __all__ = [
     "load_environment",
     "print_prompt_completions_sample",
     "get_messages",
+    "rollout_to_member_rollouts",
     "cleanup",
     "metric",
     "reward",

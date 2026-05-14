@@ -19,6 +19,8 @@ from typing import (
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
+from verifiers.api_profile import ApiProfile  # runtime: ClientConfig uses it
+
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
     from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
@@ -189,6 +191,7 @@ class ResponseTokens(CustomBaseModel):
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
+    prompt_message_indices: list[int] | None = None
     routed_experts: str | None = None  # base64 NumPy [seq_len, layers, topk]
     # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
     # carrying processed pixel_values / placeholder ranges per modality.
@@ -232,6 +235,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
+    prompt_message_indices: NotRequired[list[int] | None]
     routed_experts: str | None  # base64 NumPy [seq_len, layers, topk]
     # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
     # carrying processed pixel_values / placeholder ranges per modality.
@@ -279,7 +283,7 @@ class TrajectoryStep(TypedDict):
 
 class BaseRolloutInput(TypedDict):
     prompt: Messages
-    example_id: int
+    example_id: int | str
 
 
 class RolloutInput(BaseRolloutInput, total=False):
@@ -369,14 +373,16 @@ class RolloutOutput(dict):
     JSON-serializable.
 
     Required fields: example_id, prompt, completion, reward, timing,
-                     is_completed, is_truncated, metrics
+                     is_completed, is_truncated, metrics, sampling_args,
+                     trajectory_id
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
-                     token_usage
+                     token_usage, mar_score
     Additional fields: arbitrary serializable state_columns
     """
 
     # Required fields
-    example_id: int
+    example_id: int | str
+    task: object
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -392,6 +398,22 @@ class RolloutOutput(dict):
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
     token_usage: TokenUsage
+    sampling_args: "SamplingArgs"
+    trajectory_id: str
+    mar_score: "MARScore"
+
+
+class MemberRollout(TypedDict):
+    """RolloutOutput-compatible dict with per-member multi-agent metadata."""
+
+    example_id: int | str
+    task: object
+    trajectory: list[TrajectoryStep]
+    sampling_args: dict[str, Any]
+    error: ErrorInfo | None
+    reward: float
+    episode_id: str
+    member_id: str
 
 
 _MISSING = object()
@@ -485,6 +507,17 @@ class State(dict):
             return self[key]
         except KeyError:
             return default
+
+    def __contains__(self, key: object) -> bool:
+        if (
+            isinstance(key, str)
+            and key in self.INPUT_FIELDS
+            and super().__contains__("input")
+        ):
+            input_obj = super().__getitem__("input")
+            if key in input_obj:
+                return True
+        return super().__contains__(key)
 
     def __setitem__(self, key: str, value: Any) -> None:
         if self.uses_v1_contract and key in self.INTERNAL_KEYS:
@@ -980,6 +1013,85 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
+class MemberScore(CustomBaseModel):
+    """Per-member outcome of one episode in a multi-agent rollout."""
+
+    member_id: str
+    reward: float
+    parse_error_count: int = 0
+    metrics: dict[str, float] = Field(default_factory=dict)
+
+
+_RESERVED_FLAT_KEYS: frozenset[str] = frozenset(
+    {
+        "example_id",
+        "task",
+        "prompt",
+        "completion",
+        "reward",
+        "timing",
+        "is_completed",
+        "is_truncated",
+        "metrics",
+        "answer",
+        "info",
+        "error",
+        "stop_condition",
+        "trajectory",
+        "tool_defs",
+        "token_usage",
+        "mar_score",
+        "trajectory_id",
+        "sampling_args",
+    }
+)
+
+
+class MARScore(CustomBaseModel):
+    """Member-attributed reward and metrics for one multi-agent episode."""
+
+    members: list[MemberScore]
+    episode_scalar: float
+    episode_metrics: dict[str, float] = Field(default_factory=dict)
+    episode_categorical: dict[str, str | None] = Field(default_factory=dict)
+    episode_error: dict[str, str] | None = None
+
+    @field_validator("members")
+    @classmethod
+    def _validate_members(cls, v: list[MemberScore]) -> list[MemberScore]:
+        if not v:
+            raise ValueError("MARScore.members cannot be empty")
+        ids = [m.member_id for m in v]
+        if len(ids) != len(set(ids)):
+            raise ValueError(f"Duplicate member_id in MARScore: {ids}")
+        return v
+
+    def by_id(self) -> dict[str, MemberScore]:
+        return {m.member_id: m for m in self.members}
+
+    def to_metrics_flat(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for k, v in self.episode_metrics.items():
+            if k in _RESERVED_FLAT_KEYS:
+                raise ValueError(
+                    f"MARScore.episode_metrics key {k!r} collides with a "
+                    "reserved RolloutOutput field"
+                )
+            out[k] = v
+        for m in self.members:
+            out[f"reward/{m.member_id}"] = m.reward
+            if m.parse_error_count:
+                out[f"parse_errors/{m.member_id}"] = float(m.parse_error_count)
+            for k, v in m.metrics.items():
+                if k in _RESERVED_FLAT_KEYS:
+                    raise ValueError(
+                        f"MemberScore.metrics key {k!r} collides with a "
+                        "reserved RolloutOutput field"
+                    )
+                out[f"{k}/{m.member_id}"] = v
+        return out
+
+
 Endpoint = TypedDict(
     "Endpoint",
     {
@@ -1011,6 +1123,7 @@ class ClientConfig(BaseModel):
 
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
+    profile: ApiProfile | None = None
     renderer: str = "auto"
     renderer_model_name: str | None = None
     renderer_pool_size: int | None = None

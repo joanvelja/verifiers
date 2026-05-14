@@ -18,7 +18,12 @@ def usage_tokens(usage: Usage) -> tuple[int, int]:
 
 
 class StateUsageTracker:
-    """Accumulates token usage and exposes a read-only live usage mapping."""
+    """Accumulates token usage and exposes a read-only live usage mapping.
+
+    ``fork()`` returns a zero-initialized child tracker; ``merge(other)``
+    absorbs the child's accumulated deltas. Multi-agent simultaneous slots
+    use this to drop usage from branches that fail before the atomic publish.
+    """
 
     __slots__ = ("_usage_seen", "_usage_totals", "_usage_view")
 
@@ -63,6 +68,17 @@ class StateUsageTracker:
             "input_tokens": self._usage_totals["input_tokens"],
             "output_tokens": self._usage_totals["output_tokens"],
         }
+
+    def fork(self) -> "StateUsageTracker":
+        """Return a zero-initialized child tracker for branch-local accounting."""
+        return StateUsageTracker()
+
+    def merge(self, other: "StateUsageTracker") -> None:
+        """Absorb another tracker's accumulated deltas into this one."""
+        if other._usage_seen:
+            self._usage_seen = True
+        self._usage_totals["input_tokens"] += other._usage_totals["input_tokens"]
+        self._usage_totals["output_tokens"] += other._usage_totals["output_tokens"]
 
 
 def compute_context_token_metrics(

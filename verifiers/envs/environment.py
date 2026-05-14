@@ -275,9 +275,9 @@ class Environment(ABC):
         signal.signal(signal.SIGTERM, lambda _, __: (_sync_teardown(), exit(143)))
 
     def _ensure_example_id(self, dataset: "Dataset") -> "Dataset":
-        """Ensure example_id column exists and is integer type."""
+        """Ensure example_id column exists and is int or str."""
         if "example_id" in dataset.column_names and not isinstance(
-            dataset["example_id"][0], int
+            dataset["example_id"][0], (int, str)
         ):
             dataset = dataset.rename_column("example_id", "src_id")
         if "example_id" not in dataset.column_names:
@@ -611,7 +611,7 @@ class Environment(ABC):
         self._get_usage_tracker(state, create_if_missing=True)
         state["trajectory_id"] = uuid.uuid4().hex
         state["reward"] = None
-        state["metrics"] = None
+        state["metrics"] = {}
         state["error"] = None
         state["final_env_response"] = None
         state["timing"] = RolloutTiming()
@@ -1050,7 +1050,9 @@ class Environment(ABC):
                         )
                         tasks[task] = i
                 else:
-                    group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
+                    group_inputs: dict[int | str, list[RolloutInput]] = defaultdict(
+                        list
+                    )
                     for rollout_input in filtered_inputs:
                         example_id = rollout_input["example_id"]
                         group_inputs[example_id].append(rollout_input)

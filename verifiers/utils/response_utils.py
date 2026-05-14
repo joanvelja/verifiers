@@ -35,6 +35,7 @@ async def parse_response_tokens(
     completion_ids = tokens.completion_ids
     completion_mask = tokens.completion_mask
     completion_logprobs = tokens.completion_logprobs
+    prompt_message_indices = tokens.prompt_message_indices
     routed_experts = tokens.routed_experts
     multi_modal_data = tokens.multi_modal_data
 
@@ -46,6 +47,8 @@ async def parse_response_tokens(
             is_truncated = True
             prompt_ids = prompt_ids[:max_seq_len]
             prompt_mask = prompt_mask[:max_seq_len]
+            if prompt_message_indices is not None:
+                prompt_message_indices = prompt_message_indices[:max_seq_len]
             completion_ids = []
             completion_mask = []
             completion_logprobs = []
@@ -72,6 +75,7 @@ async def parse_response_tokens(
         completion_logprobs=completion_logprobs,
         overlong_prompt=overlong_prompt,
         is_truncated=is_truncated,
+        prompt_message_indices=prompt_message_indices,
         routed_experts=routed_experts,
     )
     if multi_modal_data is not None:

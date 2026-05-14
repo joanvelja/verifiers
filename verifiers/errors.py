@@ -66,3 +66,27 @@ class BrowserSandboxError(SandboxError):
     """Used to catch errors while interacting with browser sandboxes."""
 
     pass
+
+
+class KernelProtocolError(Error):
+    """Raised by the multi-agent kernel on protocol violations
+    (wrong agent, duplicate submission, finished episode, etc.).
+
+    Subclass of vf.Error so rollout-layer vf.Error boundaries can
+    distinguish protocol violations from other framework errors.
+    """
+
+    pass
+
+
+class ContentParseError(KernelProtocolError):
+    """Raised when model output violates the channel-markup contract
+    (nested/unclosed/multiple ``<think>`` or configured private tag).
+
+    Distinct from kernel-state protocol violations: apply_action
+    quarantines these on the utterance (empty public_channel +
+    ``parse_error`` flag) rather than aborting the rollout, so a
+    single agent's formatting slip does not DoS the whole episode.
+    """
+
+    pass

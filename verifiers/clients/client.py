@@ -11,6 +11,7 @@ from anthropic import (
 from openai import AuthenticationError as OpenAIAuthenticationError
 from openai import PermissionDeniedError as OpenAIPermissionDeniedError
 
+from verifiers.api_profile import ApiProfile
 from verifiers.errors import Error, ModelError
 from verifiers.types import (
     ClientConfig,
@@ -37,14 +38,32 @@ AUTH_ERRORS: tuple[type[Exception], ...] = (
 
 
 class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
-    def __init__(self, client_or_config: ClientT | ClientConfig) -> None:
+    # Subclasses override with their endpoint's contract. Used when
+    # ClientConfig.profile is None and the caller constructed the client
+    # without passing `profile=...` explicitly.
+    _default_profile: ApiProfile = ApiProfile.OPENAI_STRICT
+
+    def __init__(
+        self,
+        client_or_config: ClientT | ClientConfig,
+        *,
+        profile: ApiProfile | None = None,
+    ) -> None:
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         if isinstance(client_or_config, ClientConfig):
             self._config = client_or_config
             self._client = self.setup_client(client_or_config)
+            config_profile = client_or_config.profile
         else:
             self._config = None
             self._client = client_or_config
+            config_profile = None
+        # Precedence: explicit constructor kwarg > ClientConfig.profile > class default.
+        self._profile: ApiProfile = profile or config_profile or self._default_profile
+
+    @property
+    def profile(self) -> ApiProfile:
+        return self._profile
 
     @property
     def client(self) -> ClientT:

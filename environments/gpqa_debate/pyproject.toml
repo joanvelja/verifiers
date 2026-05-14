@@ -1,0 +1,36 @@
+[project]
+name = "gpqa-debate"
+version = "0.1.0"
+description = "GPQA Diamond / Main under a two-debater + judge protocol"
+readme = "README.md"
+tags = ["gpqa", "debate", "multi-agent", "eval"]
+requires-python = ">=3.11"
+dependencies = [
+    # Loose pin: the consumer (e.g. prime-rl) pins the verifiers commit.
+    # Commit-pinning the parent package from a nested sub-package creates a
+    # circular dependency on its own SHA and drifts behind main.
+    "verifiers",
+    "datasets>=2.14",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["gpqa_debate.py", "pyproject.toml", "README.md"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+# Point the unpinned `verifiers` dep at the joanvelja fork's main ref.
+# rev intentionally tracks verifiers/main HEAD; consumers (e.g. prime-rl)
+# may override this via their own [tool.uv.sources].
+[tool.uv.sources]
+verifiers = { git = "https://github.com/joanvelja/verifiers.git", branch = "main" }
+
+[tool.verifiers.eval]
+num_examples = 50
+rollouts_per_example = 4
+max_tokens = 1024
+temperature = 1.0
