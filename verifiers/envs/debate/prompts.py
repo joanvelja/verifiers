@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import functools
 import re
-import string
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,6 +26,11 @@ from .fields import (
     validate_type_scoring,
 )
 from .parsing import generate_format_instructions
+from verifiers.utils.judge_prompts import (
+    JudgeTemplate,
+    compile_judge_blocks,
+    validate_judge_blocks,
+)
 
 if TYPE_CHECKING:
     pass
@@ -35,8 +39,6 @@ _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 _ROLE_NAMES = {"judge", "debater_a", "debater_b"}
 _TAG_NAME_RE = re.compile(r"^\w+$")
-_UTILITY_BLOCK_NAMES = ("_matcher", "_grader")
-
 _THINK_VISIBILITY_LEVELS = frozenset(
     {"disabled", "private", "visible_to_judge", "open"}
 )
@@ -53,27 +55,6 @@ _THINK_DESCRIPTIONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 _jinja_env = jinja2.sandbox.SandboxedEnvironment(undefined=jinja2.StrictUndefined)
-
-
-# ---------------------------------------------------------------------------
-# JudgeTemplate
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class JudgeTemplate:
-    """Raw user-prompt template for an eval-time LLM judge call.
-
-    ``user`` is a Python ``.format()`` template with ``{question}``,
-    ``{answer}``, and ``{response}`` placeholders consumed by
-    ``JudgeRubric.judge``. ``positive`` / ``negative`` are the canonical
-    verdict tokens (uppercased, punct-stripped first word) the rubric
-    compares against the model's response.
-    """
-
-    user: str
-    positive: str
-    negative: str
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +302,7 @@ def resolve_prompts(ref: str) -> DebatePrompts:
     think_visibility, think_tag = _normalize_think(d.get("think", {}))
     prefill = _compile_templates(d.get("prefill", {}))
     fields = _parse_fields(d.get("fields", {}))
-    judges = _compile_judge_blocks(d)
+    judges = compile_judge_blocks(d)
 
     raw_ow = d.get("opponent_wrap")
     opponent_wrap: dict[str, jinja2.Template] | None = None
@@ -400,7 +381,7 @@ def _validate(d: dict) -> None:
     if d.get("version") != 2:
         raise ValueError(f"Unsupported prompt version: {d.get('version')} (expected 2)")
 
-    _validate_judge_blocks(d)
+    validate_judge_blocks(d)
 
     for section in ("system", "user"):
         block = d.get(section, {})
@@ -537,64 +518,4 @@ def _parse_fields(block: dict) -> dict[str, dict[str, dict[str, FieldSpec]]]:
         result[role] = {}
         for trigger, field_defs in triggers.items():
             result[role][trigger] = _resolve_fields(field_defs)
-    return result
-
-
-def _normalize_verdict_token(text: str) -> str | None:
-    stripped = text.strip()
-    if not stripped:
-        return None
-    token = stripped.split()[0].rstrip(string.punctuation)
-    return token.upper() if token else None
-
-
-def _validate_judge_blocks(d: dict) -> None:
-    for block_name in _UTILITY_BLOCK_NAMES:
-        block = d.get(block_name)
-        if block is None:
-            continue
-        if not isinstance(block, dict):
-            raise ValueError(
-                f"{block_name}: expected mapping, got {type(block).__name__}"
-            )
-        required_keys = {"system", "user", "positive", "negative"}
-        missing = required_keys - set(block)
-        extra = set(block) - required_keys
-        if missing:
-            raise ValueError(f"{block_name}: missing required keys {sorted(missing)}")
-        if extra:
-            raise ValueError(f"{block_name}: unknown keys {sorted(extra)}")
-        for key in ("system", "user", "positive", "negative"):
-            if not isinstance(block[key], str):
-                raise ValueError(f"{block_name}.{key}: expected str")
-        positive = _normalize_verdict_token(block["positive"])
-        negative = _normalize_verdict_token(block["negative"])
-        if positive is None:
-            raise ValueError(f"{block_name}.positive: expected non-empty verdict token")
-        if negative is None:
-            raise ValueError(f"{block_name}.negative: expected non-empty verdict token")
-        if positive == negative:
-            raise ValueError(
-                f"{block_name}: positive/negative must normalize to distinct verdicts"
-            )
-
-
-def _compile_judge_blocks(d: dict) -> dict[str, JudgeTemplate]:
-    result: dict[str, JudgeTemplate] = {}
-    for block_name, short_name in (("_matcher", "matcher"), ("_grader", "grader")):
-        block = d.get(block_name)
-        if block is None:
-            continue
-        positive = _normalize_verdict_token(block["positive"])
-        negative = _normalize_verdict_token(block["negative"])
-        if positive is None or negative is None:
-            raise ValueError(
-                f"{block_name}: verdict tokens must be non-empty "
-                f"(positive={block['positive']!r}, negative={block['negative']!r})"
-            )
-        result[short_name] = JudgeTemplate(
-            user=block["user"],
-            positive=positive,
-            negative=negative,
-        )
     return result

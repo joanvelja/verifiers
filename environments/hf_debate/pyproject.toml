@@ -1,0 +1,18 @@
+[project]
+name = "hf-debate"
+version = "0.1.0"
+description = "Generic Hugging Face debate environment"
+readme = "README.md"
+tags = ["hf", "debate", "multi-agent"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.12",
+    "datasets>=3.0.0,<4.7.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["hf_debate.py", "pyproject.toml", "README.md"]

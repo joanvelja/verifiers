@@ -13,7 +13,7 @@ class Parser:
     - `parse_answer` returns the last message's content (or text if string)
     """
 
-    def __init__(self, extract_fn: Callable[[str], str] = lambda x: x):
+    def __init__(self, extract_fn: Callable[[str], str | None] = lambda x: x):
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.extract_fn = extract_fn
 
