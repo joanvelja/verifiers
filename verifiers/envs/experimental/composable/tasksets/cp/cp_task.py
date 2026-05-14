@@ -6,8 +6,6 @@ Usage::
     taskset = CPTaskSet()
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import random
@@ -145,6 +143,7 @@ class CPTaskSet(SandboxTaskSet):
         dataset_name: str = DEFAULT_DATASET,
         dataset_subset: str = DEFAULT_SUBSET,
         dataset_split: str = DEFAULT_SPLIT,
+        filter_fn: str | None = None,
         instruction_prompt: str = DEFAULT_INSTRUCTION_PROMPT,
         max_num_tests: int | None = 15,
         timeout_per_test: int = 60,
@@ -175,7 +174,9 @@ class CPTaskSet(SandboxTaskSet):
             min_solve_rate,
             max_solve_rate,
         )
-        super().__init__(dataset=dataset, name=f"cp/{dataset_name}")
+        super().__init__(
+            dataset=dataset, name=f"cp/{dataset_name}", filter_fn=filter_fn
+        )
 
     def _build_dataset(
         self,
@@ -232,7 +233,6 @@ class CPTaskSet(SandboxTaskSet):
             cpu_cores=2,
             memory_gb=4,
             disk_size_gb=4,
-            timeout_minutes=60,
         )
 
     def get_rubric(self):

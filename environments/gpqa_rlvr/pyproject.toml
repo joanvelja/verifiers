@@ -18,7 +18,7 @@ build-backend = "hatchling.build"
 include = ["gpqa_rlvr.py", "pyproject.toml", "README.md"]
 
 [tool.verifiers.eval]
-num_examples = 198
-rollouts_per_example = 4
+num_examples = 5
+rollouts_per_example = 3
 max_tokens = 2048
 temperature = 1.0

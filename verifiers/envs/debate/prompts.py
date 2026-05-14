@@ -4,14 +4,12 @@ Loads prompt packs from YAML, compiles Jinja templates, resolves field
 declarations into FieldSpec objects.  Single-pass sandboxed Jinja rendering.
 """
 
-from __future__ import annotations
-
 import functools
 import re
 import string
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import jinja2
 import jinja2.nodes
@@ -27,9 +25,6 @@ from .fields import (
     validate_type_scoring,
 )
 from .parsing import generate_format_instructions
-
-if TYPE_CHECKING:
-    pass
 
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 

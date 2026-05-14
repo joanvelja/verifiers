@@ -19,11 +19,10 @@ Multi-agent rollouts are N speakers sharing a transcript — a different
 shape that warrants a sibling of MultiTurnEnv, not a subclass.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import re
+import time
 from abc import abstractmethod
 from typing import Any, Callable, Literal, final
 
@@ -52,11 +51,6 @@ from verifiers.utils.message_utils import (
 from verifiers.utils.response_utils import (
     parse_response_message,
     parse_response_tokens,
-)
-from verifiers.utils.rendered_streams import (
-    RENDERER_STREAMS_STATE_KEY,
-    commit_rendered_step,
-    get_renderer_streams,
 )
 from verifiers.utils.usage_utils import StateUsageTracker
 
@@ -290,6 +284,7 @@ class MultiAgentEnv(vf.Environment):
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
+        state["timing"].generation.start = time.time()
         try:
             state["_kernel"] = KernelState(slot_index=0)
 
@@ -310,9 +305,9 @@ class MultiAgentEnv(vf.Environment):
 
             await self.render_completion(state)
             return state
-        except asyncio.CancelledError:
-            await self._cleanup(state)
-            raise
+        finally:
+            state["timing"].generation.end = time.time()
+            await self.cleanup(state)
 
     @final
     async def _run_sequential_slot(self, state: State, slot: TurnSlot) -> None:
@@ -346,11 +341,6 @@ class MultiAgentEnv(vf.Environment):
         utt = result.committed[0]
         fields = await self.extract_fields(utt.public_channel, agent, slot)
         step = await self._build_step(state, prompt, response, utt, fields)
-        state[RENDERER_STREAMS_STATE_KEY] = commit_rendered_step(
-            get_renderer_streams(state),
-            step,
-            stream_id=agent,
-        )
         state["trajectory"].append(step)
 
     @final
@@ -520,21 +510,12 @@ class MultiAgentEnv(vf.Environment):
             step = await self._build_step(state, prompt, response, utt, fields)
             staged_steps.append(step)
 
-        staged_streams = get_renderer_streams(state)
-        for agent, step in zip(slot.agents, staged_steps):
-            staged_streams = commit_rendered_step(
-                staged_streams,
-                step,
-                stream_id=agent,
-            )
-
         # Phase 3: PUBLISH. Synchronous tail: trajectory appends + kernel
         # assignment + usage-tracker merge. No awaits, no raises after this
         # point. Merging is the accounting-side counterpart of the kernel
         # assignment — both happen iff the slot succeeds.
         for step in staged_steps:
             state["trajectory"].append(step)
-        state[RENDERER_STREAMS_STATE_KEY] = staged_streams
         state["_kernel"] = staged_kernel
         if isinstance(parent_tracker, StateUsageTracker):
             for child in per_agent_trackers:

@@ -1,7 +1,5 @@
 """Split a multi-agent RolloutOutput into per-member training rollouts."""
 
-from __future__ import annotations
-
 from typing import Any, Mapping
 
 from .types import MARScore, MemberRollout, RolloutOutput
@@ -49,7 +47,7 @@ def rollout_to_member_rollouts(
             "trajectory missing from RolloutOutput — the multi-agent "
             "bridge requires per-step trajectory data. Add 'trajectory' "
             "to state_columns when saving outputs for training (e.g. "
-            "``--state-columns trajectory,mar_score``)."
+            "``--state-columns trajectory``)."
         )
 
     # vf-eval doesn't always populate temperature in saved metadata when
@@ -67,6 +65,13 @@ def rollout_to_member_rollouts(
             f"MARScore.members={sorted(expected_members)}; rubric/env "
             "out-of-sync — silently dropping these steps would corrupt "
             "training data"
+        )
+    missing_members = expected_members - set(steps_by_member)
+    if missing_members and rollout_error is None:
+        raise ValueError(
+            f"MARScore member_id(s) {sorted(missing_members)} have no trajectory "
+            "steps, but the rollout did not record an error; emitting empty "
+            "member trajectories would silently corrupt training data"
         )
 
     return [

@@ -1,3 +1,4 @@
+from verifiers.clients.routed_experts import truncate_routed_experts
 from verifiers.types import (
     AssistantMessage,
     Messages,
@@ -9,11 +10,13 @@ from verifiers.types import (
 async def parse_response_message(response: Response) -> Messages:
     """Parse a vf.Response into a vf.Messages list (single vf.AssistantMessage)."""
     response_message = response.message
+    extras = getattr(response_message, "model_extra", None) or {}
     message = AssistantMessage(
         content=response_message.content,
         reasoning_content=response_message.reasoning_content,
         thinking_blocks=response_message.thinking_blocks,
         tool_calls=response_message.tool_calls,
+        **extras,
     )
     return [message]
 
@@ -34,6 +37,7 @@ async def parse_response_tokens(
     completion_logprobs = tokens.completion_logprobs
     prompt_message_indices = tokens.prompt_message_indices
     routed_experts = tokens.routed_experts
+    multi_modal_data = tokens.multi_modal_data
 
     if max_seq_len is not None:
         prompt_len = len(prompt_ids)
@@ -48,21 +52,22 @@ async def parse_response_tokens(
             completion_ids = []
             completion_mask = []
             completion_logprobs = []
-            routed_experts = [] if routed_experts is not None else None
+            routed_experts = truncate_routed_experts(routed_experts, len(prompt_ids))
         elif prompt_len + completion_len > max_seq_len:
             is_truncated = True
             completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
             completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
             completion_logprobs = tokens.completion_logprobs[: max_seq_len - prompt_len]
-            if routed_experts is not None:
-                routed_experts = routed_experts[: max_seq_len - prompt_len]
+            routed_experts = truncate_routed_experts(
+                routed_experts, prompt_len + len(completion_ids)
+            )
         else:
             is_truncated = False
     else:
         overlong_prompt = False
         is_truncated = False
 
-    return TrajectoryStepTokens(
+    out = TrajectoryStepTokens(
         prompt_ids=prompt_ids,
         prompt_mask=prompt_mask,
         completion_ids=completion_ids,
@@ -73,3 +78,10 @@ async def parse_response_tokens(
         prompt_message_indices=prompt_message_indices,
         routed_experts=routed_experts,
     )
+    if multi_modal_data is not None:
+        out["multi_modal_data"] = multi_modal_data
+        # Move (not copy) the sidecar to its canonical home on the parsed
+        # step. Leaving it on ``response.message.tokens`` too means every
+        # downstream pass (msgpack, save) has to dedupe the duplicate.
+        tokens.multi_modal_data = None
+    return out

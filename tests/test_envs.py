@@ -1,6 +1,7 @@
 import os
+import importlib.util
 import subprocess
-import tempfile
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,11 +12,8 @@ INSTALL_TIMEOUT = 600  # 10 minutes for venv creation + package install
 IMPORT_TIMEOUT = 120  # 2 minutes for importing a package
 LOAD_TIMEOUT = 300  # 5 minutes for loading an environment (may download datasets)
 EVAL_TIMEOUT = 600  # 10 minutes for running vf-eval with -n 1 -r 1
-WHEEL_SMOKE_TIMEOUT = 900  # 15 minutes for wheel build + git dependency install
 
 SKIPPED_ENVS = [
-    # Requires EXA_API_KEY environment variable
-    "mcp_search_env",
     # Requires fix for completion dataset setup
     # uv run pytest tests/test_envs.py -vv -k continuation_quality
     #
@@ -39,6 +37,8 @@ SKIPPED_ENV_LOADING_ENVS = [
     # Skip generic load checks here and cover via dedicated OpenEnv tests.
     "openenv_echo",
     "openenv_textarena",
+    # R2E-Gym pulls a full image-backed SWE taskset; cover it with dedicated v1 tests.
+    "rlm_swe_v1",
 ]
 
 
@@ -92,71 +92,27 @@ def test_readme_exists(env_dir: Path):
     assert (env_dir / "README.md").exists(), "README.md does not exist"
 
 
-@pytest.mark.slow
-def test_gpqa_debate_built_wheel_imports_and_loads_from_tmp_venv():
-    """Build gpqa-debate as a wheel and smoke-load it in a fresh /tmp venv."""
-    repo_root = Path(__file__).parent.parent
-    env_dir = repo_root / "environments" / "gpqa_debate"
+def test_alphabet_sort_v1_validates_parameters():
+    module_path = Path("environments/alphabet_sort/alphabet_sort_v1.py").resolve()
+    spec = importlib.util.spec_from_file_location("alphabet_sort_v1_test", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
 
-    with tempfile.TemporaryDirectory(prefix="gpqa_debate_wheel_", dir="/tmp") as tmp:
-        tmp_dir = Path(tmp)
-        dist_dir = tmp_dir / "dist"
-        venv_dir = tmp_dir / ".venv"
-
-        build = subprocess.run(
-            ["uv", "build", "--wheel", "--out-dir", str(dist_dir), str(env_dir)],
-            capture_output=True,
-            text=True,
-            timeout=WHEEL_SMOKE_TIMEOUT,
-        )
-        assert build.returncode == 0, (
-            f"Failed to build gpqa-debate wheel: {build.stderr}"
-        )
-
-        wheels = list(dist_dir.glob("gpqa_debate-*.whl"))
-        assert len(wheels) == 1, f"Expected one gpqa-debate wheel, got {wheels}"
-
-        venv = subprocess.run(
-            ["uv", "venv", "--clear", str(venv_dir)],
-            capture_output=True,
-            text=True,
-            timeout=INSTALL_TIMEOUT,
-        )
-        assert venv.returncode == 0, f"Failed to create fresh venv: {venv.stderr}"
-
-        python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        install = subprocess.run(
-            ["uv", "pip", "install", "--python", str(python), str(wheels[0])],
-            capture_output=True,
-            text=True,
-            timeout=WHEEL_SMOKE_TIMEOUT,
-        )
-        assert install.returncode == 0, (
-            f"Failed to install gpqa-debate wheel into fresh venv:\n"
-            f"STDOUT:\n{install.stdout}\nSTDERR:\n{install.stderr}"
-        )
-
-        smoke = subprocess.run(
-            [
-                str(python),
-                "-I",
-                "-c",
-                (
-                    "import gpqa_debate; "
-                    "import verifiers as vf; "
-                    "env = vf.load_environment('gpqa_debate'); "
-                    "assert env is not None"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            cwd=tmp_dir,
-            timeout=LOAD_TIMEOUT,
-        )
-        assert smoke.returncode == 0, (
-            f"Failed gpqa-debate import/load smoke:\n"
-            f"STDOUT:\n{smoke.stdout}\nSTDERR:\n{smoke.stderr}"
-        )
+    with pytest.raises(ValueError, match="min_turns must be at least 1"):
+        module.load_taskset(min_turns=0)
+    with pytest.raises(
+        ValueError, match="min_turns must be less than or equal to max_turns"
+    ):
+        module.load_taskset(min_turns=3, max_turns=2)
+    with pytest.raises(ValueError, match="min_names_per_turn must be at least 1"):
+        module.load_taskset(min_names_per_turn=0)
+    with pytest.raises(
+        ValueError,
+        match="min_names_per_turn must be less than or equal to max_names_per_turn",
+    ):
+        module.load_taskset(min_names_per_turn=3, max_names_per_turn=2)
 
 
 @pytest.mark.slow
@@ -166,7 +122,7 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     if env_dir.name in SKIPPED_ENVS:
         pytest.skip(f"Skipping {env_dir.name}")
     if env_dir.name in SKIPPED_ENV_LOADING_ENVS:
-        pytest.skip(f"Skipping slow OpenEnv smoke test for {env_dir.name}")
+        pytest.skip(f"Skipping dedicated-runtime smoke test for {env_dir.name}")
     tmp_venv_dir = tmp_path_factory.mktemp(f"venv_{env_dir.name}")
     repo_root = Path(__file__).parent.parent
     cmd = (

@@ -1,7 +1,5 @@
 """Pure-functional multi-agent episode kernel."""
 
-from __future__ import annotations
-
 import re
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType

@@ -46,10 +46,7 @@ async def test_judge_rubric_routes_rendered_prompt_model_and_args(mock_client):
         judge_client=mock_client,
         judge_model="test-model",
         judge_prompt=(
-            "Q: {question}\n"
-            "GT: {answer}\n"
-            "Resp: {response}\n"
-            "Reply CORRECT or INCORRECT."
+            "Q: {question}\nGT: {answer}\nResp: {response}\nReply CORRECT or INCORRECT."
         ),
         # Use the legacy max_tokens form so the normalization path runs.
         judge_sampling_args={"temperature": 0.0, "max_tokens": 64},
@@ -74,7 +71,8 @@ async def test_judge_rubric_routes_rendered_prompt_model_and_args(mock_client):
     # verbatim. Pull content via dict OR attr to stay stable across
     # Pydantic/dict forms.
     rendered_content = (
-        rendered.get("content") if isinstance(rendered, dict)
+        rendered.get("content")
+        if isinstance(rendered, dict)
         else getattr(rendered, "content", "")
     )
     assert "Q: What is 2+2?" in rendered_content

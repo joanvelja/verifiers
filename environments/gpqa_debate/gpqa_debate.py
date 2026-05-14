@@ -34,7 +34,7 @@ Launch
 
 env_args schema
 ---------------
-All optional. Any omitted keys inherit the vf-eval top-level model/provider.
+All optional. Omitted keys inherit the vf-eval top-level model/provider.
 
     prompts_ref        str      built-in name or /path/to/pack.yaml   "selfplay"
     subset             str      gpqa_diamond | gpqa_main              "gpqa_diamond"
@@ -63,13 +63,11 @@ All optional. Any omitted keys inherit the vf-eval top-level model/provider.
     pin_learner_seat     str   "a" | "b" — hard override (ablation)    None
 """
 
-from __future__ import annotations
-
 import hashlib
 import logging
 import os
 import random
-from typing import Any, Callable, Literal
+from typing import Callable, Literal
 
 from datasets import Dataset, load_dataset
 
@@ -125,7 +123,7 @@ def _format_row(
     truth_letter = LETTERS[choices.index(correct)]
     body = "\n".join(f"{L}) {c}" for L, c in zip(LETTERS, choices))
     example_id = str(row.get("Record ID") or f"gpqa_{rng.random():.10f}")
-    info: dict[str, Any] = {}
+    info: vf.ConfigData = {"env_id": "gpqa_debate"}
     if seat_mode is not None:
         info["learner_seat"] = _pick_learner_seat(
             example_idx=example_idx,
@@ -146,7 +144,6 @@ def _format_row(
         ],
         "answer": truth_letter,
         "example_id": example_id,
-        "task": "gpqa_debate",
         "info": info,
     }
 
@@ -407,7 +404,7 @@ def load_environment(
     learner_seat_mode: SeatMode = "bernoulli",
     learner_seat_seed: int = 0,
     pin_learner_seat: SeatPin | None = None,
-    **extra: Any,
+    **extra: object,
 ) -> DebateEnv:
     """vf-eval / training entry point. See module docstring for env_args schema.
 

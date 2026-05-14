@@ -10,8 +10,6 @@ Diagnostics (weight-0 telemetry; never feed reward):
                 episode_scalar (1 iff judge picked truth_member), winner
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 import verifiers as vf
@@ -182,9 +180,8 @@ class DebateRubric(MultiAgentRubric):
         judge_model: str = "gpt-4.1-nano",
         **kwargs: Any,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(members=members, **kwargs)
         self.truth_member = truth_member
-        self.members = members
         self.prompts = prompts
         self.grader = maybe_judge(prompts, "grader", judge_client, judge_model)
         self.matcher = maybe_judge(prompts, "matcher", judge_client, judge_model)
