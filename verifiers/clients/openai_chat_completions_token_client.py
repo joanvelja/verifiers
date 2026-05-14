@@ -1,7 +1,9 @@
 from collections.abc import Mapping
-from typing import Any, cast
+from typing import cast
 
 from openai.types.chat import ChatCompletion
+from renderers.base import Message as RendererMessage
+from renderers.base import ToolSpec as RendererToolSpec
 from renderers.streams import PreparedTurn
 
 from verifiers.api_profile import ApiProfile
@@ -57,10 +59,10 @@ def _has_multimodal_content(messages) -> bool:
 
 def _to_renderer_tools(
     oai_tools: list[OpenAITool] | None,
-) -> list[dict[str, Any]] | None:
+) -> list[RendererToolSpec] | None:
     if oai_tools is None:
         return None
-    renderer_tools: list[dict[str, Any]] = []
+    renderer_tools: list[RendererToolSpec] = []
     for tool in oai_tools:
         function = tool.get("function") if isinstance(tool, Mapping) else None
         if function is None:
@@ -68,9 +70,13 @@ def _to_renderer_tools(
         if function is None:
             continue
         if isinstance(function, Mapping):
-            renderer_tools.append(dict(function))
+            renderer_tools.append(
+                cast(RendererToolSpec, {str(k): v for k, v in function.items()})
+            )
         elif hasattr(function, "model_dump"):
-            renderer_tools.append(function.model_dump(exclude_none=True))
+            renderer_tools.append(
+                cast(RendererToolSpec, function.model_dump(exclude_none=True))
+            )
     return renderer_tools or None
 
 
@@ -176,7 +182,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         renderer = self._get_renderer(model)
         return get_renderer_streams(state).prepare_append(
             stream_id,
-            list(prompt_messages),
+            cast(list[RendererMessage], list(prompt_messages)),
             renderer,
             tools=_to_renderer_tools(oai_tools),
         )

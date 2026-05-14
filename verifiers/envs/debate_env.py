@@ -15,7 +15,7 @@ inherited from :class:`MultiAgentEnv`.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from verifiers.clients import Client
 from verifiers.envs.debate.parsing import extract_fields
@@ -85,11 +85,12 @@ class DebateEnv(MultiAgentEnv):
         # Silent drift desyncs round_index (env) from per-member reward
         # attribution (rubric) and yields plausible-but-wrong training
         # signal. Rubric contract (MultiAgentRubric) guarantees the attr.
-        if list(self.rubric.members) != list(members):
+        rubric_members = list(cast(Any, self.rubric).members)
+        if rubric_members != list(members):
             raise ValueError(
                 f"DebateEnv.members != rubric.members\n"
                 f"  env    : {list(members)}\n"
-                f"  rubric : {list(self.rubric.members)}\n"
+                f"  rubric : {rubric_members}\n"
                 f"Both must be identical (same ids, same order) -- "
                 f"round_index and reward attribution key off them."
             )
