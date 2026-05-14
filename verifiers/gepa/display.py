@@ -21,6 +21,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.utils.display_utils import BaseDisplay, make_aligned_row
+from verifiers.utils.data_utils import canonical_example_id
 
 
 @dataclass
@@ -49,7 +50,7 @@ class GEPADisplayState:
     minibatch_skipped: bool = False
 
     # Per-valset-row tracking (only from full valset evals)
-    valset_rows: dict[int, ValsetRowState] = field(default_factory=dict)
+    valset_rows: dict[str, ValsetRowState] = field(default_factory=dict)
     num_valset_evals: int = 0
 
 
@@ -79,7 +80,7 @@ class GEPADisplay(BaseDisplay):
         num_train: int | None = None,
         num_val: int | None = None,
         valset_size: int = 50,
-        valset_example_ids: list[int] | None = None,
+        valset_example_ids: list[int | str] | None = None,
         log_file: str | Path | None = None,
         perfect_score: float | None = None,
         screen: bool = False,
@@ -99,8 +100,10 @@ class GEPADisplay(BaseDisplay):
 
         # Valset info (updated after env loads)
         self.valset_size = valset_size
-        self.valset_example_ids: set[int] | None = (
-            set(valset_example_ids) if valset_example_ids else None
+        self.valset_example_ids: set[str] | None = (
+            {canonical_example_id(example_id) for example_id in valset_example_ids}
+            if valset_example_ids
+            else None
         )
         self.log_file = Path(log_file) if log_file else None
 
@@ -110,11 +113,15 @@ class GEPADisplay(BaseDisplay):
     def get_log_hint(self) -> Text | None:
         return None
 
-    def set_valset_info(self, valset_size: int, valset_example_ids: list[int]) -> None:
+    def set_valset_info(
+        self, valset_size: int, valset_example_ids: list[int | str]
+    ) -> None:
         """Update valset info after environment is loaded."""
         self.valset_size = valset_size
         self.valset_example_ids = (
-            set(valset_example_ids) if valset_example_ids else None
+            {canonical_example_id(example_id) for example_id in valset_example_ids}
+            if valset_example_ids
+            else None
         )
 
     def start(self) -> None:
@@ -155,7 +162,7 @@ class GEPADisplay(BaseDisplay):
         self,
         candidate_idx: int,
         scores: list[float],
-        example_ids: list[int],
+        example_ids: list[int | str],
         capture_traces: bool = False,
     ) -> None:
         """
@@ -169,17 +176,20 @@ class GEPADisplay(BaseDisplay):
         """
         # Update budget
         self.state.metric_calls_used += len(scores)
+        canonical_example_ids = [
+            canonical_example_id(example_id) for example_id in example_ids
+        ]
 
         # Check if this is a valset eval by matching example_ids
         if self.valset_example_ids is not None:
-            is_valset_eval = set(example_ids) == self.valset_example_ids
+            is_valset_eval = set(canonical_example_ids) == self.valset_example_ids
         else:
             is_valset_eval = len(scores) == self.valset_size
 
         if is_valset_eval:
             # Full valset evaluation - update frontier
             self.state.num_valset_evals += 1
-            for example_id, score in zip(example_ids, scores):
+            for example_id, score in zip(canonical_example_ids, scores):
                 row = self.state.valset_rows.get(example_id)
                 if row is None:
                     self.state.valset_rows[example_id] = ValsetRowState(

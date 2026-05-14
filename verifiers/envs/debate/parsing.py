@@ -1,18 +1,16 @@
 """Core XML parser, extraction, normalization, format instructions."""
 
-from __future__ import annotations
-
+from collections.abc import Callable, Mapping
 import logging
 import re
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
-    from .fields import FieldSpec
+from .fields import FieldSpec
 
 _log = logging.getLogger(__name__)
 
 _XML_TAG_RE = re.compile(r"<(\w+)>(.*?)</\1>", re.DOTALL)
+
 
 def _coerce_bool(v: str) -> bool | None:
     normed = v.strip().lower()
@@ -64,7 +62,9 @@ def parse(text: str, schema: dict[str, type]) -> dict[str, Any] | None:
     return result or None
 
 
-def normalize_fields(raw: dict[str, Any], specs: dict[str, FieldSpec]) -> dict[str, Any]:
+def normalize_fields(
+    raw: dict[str, Any], specs: dict[str, FieldSpec]
+) -> dict[str, Any]:
     result = dict(raw)
     for key, value in raw.items():
         spec = specs.get(key)
@@ -84,16 +84,24 @@ def extract_fields(text: str, specs: dict[str, FieldSpec]) -> dict[str, Any] | N
 def generate_format_instructions(fields: Mapping[str, FieldSpec]) -> str:
     from .fields import BinaryScoring, EnumScoring, NumericScoring
 
-    lines = ["After your reasoning, you MUST include the following XML tags at the end of your response:"]
+    lines = [
+        "After your reasoning, you MUST include the following XML tags at the end of your response:"
+    ]
     for name, spec in fields.items():
         scoring = spec.scoring
         if isinstance(scoring, BinaryScoring):
-            lines.append(f"<{name}>{scoring.true_value} or {scoring.false_value}</{name}>")
+            lines.append(
+                f"<{name}>{scoring.true_value} or {scoring.false_value}</{name}>"
+            )
         elif isinstance(scoring, EnumScoring):
             vals = ", ".join(scoring.values)
-            lines.append(f"<{name}> YOUR {name.upper()} </{name}>  (exactly one of: {vals})")
+            lines.append(
+                f"<{name}> YOUR {name.upper()} </{name}>  (exactly one of: {vals})"
+            )
         elif isinstance(scoring, NumericScoring):
-            lines.append(f"<{name}>number between {scoring.min_val} and {scoring.max_val}</{name}>")
+            lines.append(
+                f"<{name}>number between {scoring.min_val} and {scoring.max_val}</{name}>"
+            )
         elif spec.description:
             lines.append(f"<{name}>{spec.description}</{name}>")
         else:

@@ -16,12 +16,15 @@ from verifiers.types import (
     GenerateMetadata,
     GenerateOutputs,
     MARScore,
+    Response,
+    RESERVED_ROLLOUT_OUTPUT_KEYS,
     RolloutOutput,
     SamplingArgs,
     State,
     TokenUsage,
     Tool,
 )
+from verifiers.utils.data_utils import canonical_example_id
 from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import (
     sanitize_tool_calls,
@@ -30,6 +33,8 @@ from verifiers.utils.message_utils import (
 from verifiers.utils.metric_utils import (
     EnvMetrics,
     ErrorRateMetric,
+    FinalInputTokensMetric,
+    FinalOutputTokensMetric,
     InputTokensMetric,
     OutputTokensMetric,
     PassAtKMetric,
@@ -38,13 +43,18 @@ from verifiers.utils.metric_utils import (
 from verifiers.utils.path_utils import get_results_path
 from verifiers.utils.usage_utils import (
     StateUsageTracker,
-)
-from verifiers.utils.usage_utils import (
-    extract_usage_tokens as extract_usage_tokens_from_response,
+    response_usage_tokens,
 )
 from verifiers.utils.version_utils import get_version_info
 
 logger = logging.getLogger(__name__)
+
+_STANDARD_STATE_COLUMNS_ALLOWED_BY_NAME = frozenset(
+    {"trajectory", "sampling_args", "trajectory_id"}
+)
+_RESERVED_STATE_COLUMN_KEYS = (
+    RESERVED_ROLLOUT_OUTPUT_KEYS - _STANDARD_STATE_COLUMNS_ALLOWED_BY_NAME
+)
 
 
 def is_json_serializable(value: object) -> bool:
@@ -52,6 +62,15 @@ def is_json_serializable(value: object) -> bool:
 
     Returns True for JSON primitives, lists/dicts of primitives,
     Pydantic models, datetime/date, Path, and exceptions.
+
+    Note: renderer multimodal sidecars (``MultiModalData``,
+    ``PlaceholderRange``, numpy arrays) intentionally return False
+    here — they are not JSON-native and ``make_serializable`` has no
+    handler for them (it would stringify to ``"array(...)"`` garbage).
+    They reach the trainer via msgpack with a custom encoder, and the
+    JSONL save path excludes the carrying column (``trajectory``) at
+    the orchestrator boundary, so this gate is bypassed for that
+    column in ``state_to_output``.
     """
     if value is None:
         return True
@@ -89,47 +108,83 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
         return str(value)
 
 
-def extract_usage_tokens(response: object) -> tuple[int, int]:
-    return extract_usage_tokens_from_response(response)
+def _token_count(value: object, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{context} must be a number.")
+    if value < 0:
+        raise ValueError(f"{context} must be non-negative.")
+    return float(value)
 
 
-def _coerce_token_usage(value: object) -> TokenUsage | None:
+def _token_usage_from_mapping(value: object, context: str) -> TokenUsage | None:
+    if value is None:
+        return None
     if not isinstance(value, Mapping):
+        raise TypeError(f"{context} must be a mapping.")
+    mapping_value = cast(Mapping[str, object], value)
+    if "input_tokens" not in mapping_value and "output_tokens" not in mapping_value:
         return None
-    mapping_value = cast(Mapping[str, Any], value)
-    try:
-        input_raw = mapping_value.get("input_tokens")
-        output_raw = mapping_value.get("output_tokens")
-        input_tokens = float(0.0 if input_raw is None else input_raw)
-        output_tokens = float(0.0 if output_raw is None else output_raw)
-    except (TypeError, ValueError):
+    if "input_tokens" not in mapping_value or "output_tokens" not in mapping_value:
+        raise KeyError(f"{context} requires input_tokens and output_tokens.")
+    usage = TokenUsage(
+        input_tokens=_token_count(
+            mapping_value["input_tokens"], f"{context}.input_tokens"
+        ),
+        output_tokens=_token_count(
+            mapping_value["output_tokens"], f"{context}.output_tokens"
+        ),
+    )
+    for key in ("final_input_tokens", "final_output_tokens"):
+        if key in mapping_value and mapping_value[key] is not None:
+            usage[key] = _token_count(mapping_value[key], f"{context}.{key}")
+    return usage
+
+
+def _token_usage_from_trajectory(trajectory: object) -> TokenUsage | None:
+    if not isinstance(trajectory, list):
         return None
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    }
+    input_tokens = 0
+    output_tokens = 0
+    usage_seen = False
+    for index, step in enumerate(trajectory):
+        if not isinstance(step, Mapping):
+            raise TypeError(f"state.trajectory[{index}] must be a mapping.")
+        step_mapping = cast(Mapping[str, object], step)
+        response = step_mapping.get("response")
+        if response is None or not isinstance(response, Response):
+            continue
+        if response.usage is None:
+            continue
+        usage_seen = True
+        step_input_tokens, step_output_tokens = response_usage_tokens(response)
+        input_tokens += step_input_tokens
+        output_tokens += step_output_tokens
+    if not usage_seen:
+        return None
+    return TokenUsage(
+        input_tokens=float(input_tokens),
+        output_tokens=float(output_tokens),
+    )
 
 
 def _extract_state_token_usage(state: State) -> TokenUsage | None:
     tracker = state.get("usage_tracker")
     if isinstance(tracker, StateUsageTracker):
         usage = tracker.snapshot()
-        coerced = _coerce_token_usage(usage)
-        if coerced is not None:
-            return coerced
-        # Tracker exists but has not seen usage yet. Avoid falling through to
-        # state["usage"], which is a zeroed live tracker view.
-        token_usage = _coerce_token_usage(state.get("token_usage"))
-        if token_usage is not None:
-            return token_usage
-        return None
-
-    for key in ("token_usage", "usage"):
-        usage = _coerce_token_usage(state.get(key))
         if usage is not None:
             return usage
+        token_usage = _token_usage_from_mapping(
+            state.get("token_usage"), "state.token_usage"
+        )
+        if token_usage is not None:
+            return token_usage
+    else:
+        for key in ("token_usage", "usage"):
+            usage = _token_usage_from_mapping(state.get(key), f"state.{key}")
+            if usage is not None:
+                return usage
 
-    return None
+    return _token_usage_from_trajectory(state.get("trajectory"))
 
 
 def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
@@ -165,50 +220,36 @@ def state_to_output(
     """
     output = RolloutOutput(
         example_id=state.get("example_id", 0),
+        task=state.get("task", ""),
         prompt=state.get("prompt"),
         completion=state.get("completion"),
         answer=state.get("answer", ""),
-        task=state.get("task", "default"),
         info=state.get("info", {}),
         reward=state.get("reward", 0.0),
         error=state.get("error", None),
-        timing=state.get("timing", {}),
+        timing=serialize_timing(state["timing"]),
         is_completed=state.get("is_completed", False),
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
         tool_defs=state.get("tool_defs"),
-        # Per-rollout sampling_args are required by the multi-agent bridge
-        # (``rollout_to_member_rollouts`` reads ``output["sampling_args"]``)
-        # and useful for offline reproducibility even in the single-agent
-        # path. Default to ``{}`` — consumers apply their own fallbacks
-        # (e.g. temperature=1.0) on missing keys.
         sampling_args=state.get("sampling_args") or {},
         trajectory_id=state.get("trajectory_id", ""),
     )
     usage = _extract_state_token_usage(state)
-    if usage is None:
-        # Legacy fallback for states that do not use state-level usage tracking.
-        trajectory = state.get("trajectory", [])
-        input_tokens = 0
-        output_tokens = 0
-        usage_seen = False
-        for step in trajectory:
-            response = step.get("response")
-            if response is None:
-                continue
-            if getattr(response, "usage", None) is not None:
-                usage_seen = True
-            step_input_tokens, step_output_tokens = extract_usage_tokens(response)
-            input_tokens += step_input_tokens
-            output_tokens += step_output_tokens
-        if usage_seen:
-            usage = {
-                "input_tokens": float(input_tokens),
-                "output_tokens": float(output_tokens),
-            }
     if usage is not None:
-        output["token_usage"] = usage
+        token_usage: dict[str, float] = {
+            "input_tokens": usage.get("input_tokens", 0.0),
+            "output_tokens": usage.get("output_tokens", 0.0),
+        }
+        # Add context token metrics from trajectory
+        trajectory = state.get("trajectory", [])
+        if isinstance(trajectory, list):
+            from verifiers.utils.usage_utils import compute_context_token_metrics
+
+            token_usage.update(compute_context_token_metrics(trajectory))
+        output["token_usage"] = token_usage
+
     judge_response = state.get("judge_response")
     if judge_response is not None:
         if not is_json_serializable(judge_response):
@@ -246,27 +287,32 @@ def state_to_output(
         )
         output["completion"] = output_completion
     # use repr for error
-    if state.get("error") is not None:
-        error_chain = ErrorChain(state.get("error"))
-        output["error"] = ErrorInfo(
-            error=type(state.get("error")).__name__,
-            error_chain_repr=repr(error_chain),
-            error_chain_str=str(error_chain),
-        )
-        output["error_chain"] = repr(error_chain)
-        output["long_error_chain"] = str(error_chain)
+    error = state.get("error")
+    if error is not None:
+        if isinstance(error, Mapping) and {
+            "error",
+            "error_chain_repr",
+            "error_chain_str",
+        } <= set(error):
+            output["error"] = ErrorInfo(
+                error=str(error["error"]),
+                error_chain_repr=str(error["error_chain_repr"]),
+                error_chain_str=str(error["error_chain_str"]),
+            )
+        else:
+            error_chain = ErrorChain(cast(BaseException, error))
+            output["error"] = ErrorInfo(
+                error=type(error).__name__,
+                error_chain_repr=repr(error_chain),
+                error_chain_str=str(error_chain),
+            )
+        output["error_chain"] = output["error"]["error_chain_repr"]
+        output["long_error_chain"] = output["error"]["error_chain_str"]
     # only include optional fields if non-empty
     if "answer" in output and not output["answer"]:
         output.pop("answer")
     if "info" in output and not output["info"]:
         output.pop("info")
-    # MARScore: single source of truth for multi-agent episode scoring.
-    # Project to legacy keys at the boundary one-way: output["reward"] +
-    # output["metrics"] (averageable scalars only) so downstream consumers
-    # (wandb, GRPO advantage) see the same shape as single-agent envs.
-    # Categorical telemetry (winner) and error metadata stay nested under
-    # output["mar_score"] — projecting them to top-level would invite the
-    # ZIP-code mistake of averaging sentinel codes alongside real metrics.
     mar = state.get("mar_score")
     if mar is not None:
         if not isinstance(mar, MARScore):
@@ -278,17 +324,44 @@ def state_to_output(
             output[k] = v
         output["metrics"] = dict(flat_metrics)
     else:
-        # Single-agent legacy path: rubric writes state["metrics"] directly.
+        # flatten metrics to top-level keys (backwards compatibility)
         state_metrics = state.get("metrics") or {}
         for k, v in state_metrics.items():
             output[k] = v
-        # Normalize: if the legacy rubric left state["metrics"] as None
-        # (init_state's seed), downstream consumers expect {} not None.
         if output.get("metrics") is None:
             output["metrics"] = {}
     # add state columns (must be serializable)
     for col in state_columns or []:
+        if col in _STANDARD_STATE_COLUMNS_ALLOWED_BY_NAME and col != "trajectory":
+            continue
+        if col in _RESERVED_STATE_COLUMN_KEYS:
+            raise ValueError(
+                f"state_columns value '{col}' conflicts with a standard output "
+                "field. Standard fields are saved automatically; choose a "
+                "different state column name."
+            )
         value = state.get(col)
+        if col == "trajectory":
+            # Renderer multimodal rollouts accumulate mm_data on every step
+            # (bridge_to_next_turn merges previous_multi_modal_data into the
+            # new turn). Naively shipping cumulative mm_data on every step
+            # duplicates every image O(N²) bytes for an N-turn rollout.
+            # Replace each step's cumulative mm_data with its delta against
+            # the prior step (items keyed by mm_hash) so any per-window
+            # TrainingSample assembler — including compaction, where a
+            # single rollout produces multiple samples and the pre-compaction
+            # sample's images aren't in the final cumulative set — can
+            # recover its window's images by unioning step-deltas.
+            value = _delta_intermediate_mm_data(value)
+            # Trajectory may carry numpy arrays / renderer dataclasses on
+            # ``tokens.multi_modal_data`` — these are not JSON-native and
+            # ``is_json_serializable`` would (correctly) reject them. They
+            # are transported to the trainer via msgpack with a custom
+            # encoder, and the JSONL save path excludes ``trajectory`` at
+            # the orchestrator boundary, so the JSON gate doesn't apply
+            # here.
+            output[col] = value
+            continue
         if not is_json_serializable(value):
             raise ValueError(
                 f"state_columns value for '{col}' is not JSON-serializable: "
@@ -297,6 +370,175 @@ def state_to_output(
         output[col] = value
 
     return output
+
+
+def _delta_intermediate_mm_data(trajectory: object) -> object:
+    """Replace each step's cumulative ``multi_modal_data`` with its delta.
+
+    The renderer's ``bridge_to_next_turn`` merges ``previous_multi_modal_data``
+    into the new turn, so each step carries the cumulative set of every
+    image rendered so far in the trajectory. For each step after the
+    first, drop items whose ``mm_hash`` already appeared in the immediately
+    prior step. The first step is left as-is (all items are new).
+
+    ``parse_response_tokens`` moves the sidecar onto ``step["tokens"]``
+    and clears the duplicate on ``response.message.tokens``, so only one
+    location needs rewriting here.
+
+    Each unique image's bytes travel exactly once across the trajectory
+    (no O(N²) duplication). Per-window ``TrainingSample`` assemblers —
+    including compaction, where a single rollout produces multiple
+    samples and the pre-compaction sample's images aren't in the final
+    cumulative set — recover any window's images by unioning the
+    step-deltas in that window. Placeholder offsets stay relative to the
+    step's own cumulative token sequence; the assembler shifts them.
+
+    Returns a new list of step dicts (shallow copies for rewritten
+    entries) so the input state isn't mutated. Non-list inputs and
+    empty / single-step trajectories pass through unchanged.
+    """
+    if not isinstance(trajectory, list) or len(trajectory) <= 1:
+        return trajectory
+
+    out: list = []
+    prior_hashes: dict[str, list[str]] = {}
+
+    for idx, raw_step in enumerate(trajectory):
+        if not isinstance(raw_step, Mapping):
+            out.append(raw_step)
+            continue
+        step = cast(Mapping[str, Any], raw_step)
+        tokens = step.get("tokens")
+        step_mm = (
+            tokens.get("multi_modal_data") if isinstance(tokens, Mapping) else None
+        )
+        current_hashes = _read_mm_hashes(step_mm)
+
+        if idx == 0:
+            out.append(step)
+            prior_hashes = current_hashes
+            continue
+
+        if isinstance(tokens, Mapping) and step_mm is not None:
+            delta = _diff_mm_data(step_mm, prior_hashes)
+            if delta is not step_mm:
+                new_step: dict[str, Any] = dict(step)
+                new_step["tokens"] = {**tokens, "multi_modal_data": delta}
+                out.append(new_step)
+                prior_hashes = current_hashes
+                continue
+
+        out.append(step)
+        prior_hashes = current_hashes
+    return out
+
+
+def _read_mm_hashes(mm: object) -> dict[str, list[str]]:
+    """Per-modality list of ``mm_hashes`` from a ``MultiModalData``-like object.
+
+    Returns a list (not a set) so multiplicity is preserved: the same
+    image rendered N times appears N times in the list, with each
+    occurrence corresponding to a separate placeholder run in the token
+    stream. The diff uses multiset semantics so each prior occurrence
+    "consumes" one matching current occurrence and the *remaining*
+    current occurrences are kept as new.
+    """
+    if mm is None:
+        return {}
+    hashes = getattr(mm, "mm_hashes", None)
+    if not isinstance(hashes, dict):
+        return {}
+    return {
+        modality: list(hs) for modality, hs in hashes.items() if isinstance(hs, list)
+    }
+
+
+def _diff_mm_data(mm: object, prior_hashes: dict[str, list[str]]) -> object:
+    """Return ``mm`` with items the prior step already covered removed.
+
+    Uses **multiset** semantics: each prior-step occurrence of a given
+    hash consumes one matching current-step occurrence, and only the
+    *surplus* current occurrences are kept. Necessary because the
+    renderer doesn't dedupe by hash — if the same image is rendered in
+    two turns, cumulative ``mm_hashes`` contains the hash twice (each
+    with its own placeholder offset), and both occurrences need their
+    ``pixel_values`` to reach the trainer. Set-based diff would drop
+    both as "already seen" and leave the second placeholder run
+    orphaned.
+
+    Returns the input unchanged if nothing is dropped (cheap fast-path
+    for steps that introduced no new items). Returns a new instance of
+    the same class with the delta items otherwise. Mirrors the
+    ``MultiModalData`` shape: three parallel per-modality lists
+    (``mm_hashes``, ``mm_items``, ``mm_placeholders``) reindexed by the
+    surviving item positions.
+    """
+    hashes = getattr(mm, "mm_hashes", None)
+    items = getattr(mm, "mm_items", None)
+    placeholders = getattr(mm, "mm_placeholders", None)
+    if (
+        not isinstance(hashes, dict)
+        or not isinstance(items, dict)
+        or not isinstance(placeholders, dict)
+    ):
+        return mm
+
+    new_hashes: dict[str, list[str]] = {}
+    new_items: dict[str, list[Any]] = {}
+    new_placeholders: dict[str, list[Any]] = {}
+    any_dropped = False
+
+    for modality, mod_hashes in hashes.items():
+        if not isinstance(mod_hashes, list):
+            new_hashes[modality] = mod_hashes
+            new_items[modality] = items.get(modality, [])
+            new_placeholders[modality] = placeholders.get(modality, [])
+            continue
+        mod_items = items.get(modality) or []
+        mod_placeholders = placeholders.get(modality) or []
+        # Multiset budget: each prior occurrence of a hash can consume
+        # one matching current occurrence. Walk current left-to-right
+        # and keep an item only after the budget for its hash is gone.
+        remaining: dict[str, int] = {}
+        for h in prior_hashes.get(modality, []):
+            remaining[h] = remaining.get(h, 0) + 1
+        keep_idx: list[int] = []
+        for i, h in enumerate(mod_hashes):
+            if remaining.get(h, 0) > 0:
+                remaining[h] -= 1
+            else:
+                keep_idx.append(i)
+        if len(keep_idx) != len(mod_hashes):
+            any_dropped = True
+        # Trust the renderer's parallel-list invariant
+        # (``emit_image`` appends to all three together). If it's
+        # broken on input, indexing fails loudly here rather than
+        # silently producing mismatched output lists.
+        new_hashes[modality] = [mod_hashes[i] for i in keep_idx]
+        new_items[modality] = [mod_items[i] for i in keep_idx]
+        new_placeholders[modality] = [mod_placeholders[i] for i in keep_idx]
+
+    if not any_dropped:
+        return mm
+
+    cls = type(mm)
+    try:
+        return cls(
+            mm_hashes=new_hashes,
+            mm_placeholders=new_placeholders,
+            mm_items=new_items,
+        )
+    except TypeError:
+        return mm
+
+
+def serialize_timing(timing: object) -> dict[str, Any]:
+    model_dump = getattr(timing, "model_dump", None)
+    if callable(model_dump):
+        return cast(dict[str, Any], model_dump())
+    if isinstance(timing, Mapping):
+        return dict(cast(Mapping[str, Any], timing))
+    raise TypeError("state['timing'] must be a RolloutTiming or mapping.")
 
 
 def states_to_outputs(
@@ -345,6 +587,8 @@ class GenerateOutputsBuilder:
         self.env_metrics = EnvMetrics()
         self.input_tokens = InputTokensMetric()
         self.output_tokens = OutputTokensMetric()
+        self.final_input_tokens = FinalInputTokensMetric()
+        self.final_output_tokens = FinalOutputTokensMetric()
         self.pass_at_k = PassAtKMetric(rollouts_per_example, threshold=pass_threshold)
 
         # Tools tracking
@@ -393,6 +637,8 @@ class GenerateOutputsBuilder:
         self.env_metrics.add_outputs(new_outputs)
         self.input_tokens.add_outputs(new_outputs)
         self.output_tokens.add_outputs(new_outputs)
+        self.final_input_tokens.add_outputs(new_outputs)
+        self.final_output_tokens.add_outputs(new_outputs)
         self.pass_at_k.add_outputs(new_outputs)
 
         for output in new_outputs:
@@ -411,10 +657,13 @@ class GenerateOutputsBuilder:
 
         usage: TokenUsage | None = None
         if self.input_tokens.count > 0:
-            usage = {
-                "input_tokens": self.input_tokens.compute(),
-                "output_tokens": self.output_tokens.compute(),
-            }
+            usage = TokenUsage(
+                input_tokens=self.input_tokens.compute(),
+                output_tokens=self.output_tokens.compute(),
+            )
+            if self.final_input_tokens.count > 0:
+                usage["final_input_tokens"] = self.final_input_tokens.compute()
+                usage["final_output_tokens"] = self.final_output_tokens.compute()
 
         return GenerateMetadata(
             env_id=self.env_id,
@@ -425,7 +674,7 @@ class GenerateOutputsBuilder:
             rollouts_per_example=self.rollouts_per_example,
             sampling_args=self.sampling_args,
             date=datetime.now().isoformat(),
-            time_ms=(time.time() - self.start_time) * 1000.0,
+            time=time.time() - self.start_time,
             avg_reward=self.reward.compute(),
             avg_metrics=self.env_metrics.compute(),
             avg_error=self.error_rate.compute(),
@@ -442,7 +691,10 @@ class GenerateOutputsBuilder:
     def build_outputs(self, sort_by_example_id: bool = False) -> list[RolloutOutput]:
         """Return (sorted) accumulated outputs"""
         if sort_by_example_id:
-            return sorted(self.outputs, key=lambda o: o.get("example_id", 0))
+            return sorted(
+                self.outputs,
+                key=lambda o: canonical_example_id(o.get("example_id", 0)),
+            )
         return self.outputs
 
     def build(self, sort_by_example_id: bool = False) -> GenerateOutputs:
@@ -549,14 +801,15 @@ def save_outputs(outputs: list[RolloutOutput], results_path: Path, mode: str = "
     outputs_path = results_path / "results.jsonl"
     with open(outputs_path, mode) as f:
         for idx, output in enumerate(outputs):
-            example_id = output.get("example_id") or "unknown"
+            example_id = output.get("example_id", "unknown")
             try:
                 json.dump(output, f, default=make_serializable)
                 f.write("\n")
             except Exception as e:
-                logger.error(
+                logger.exception(
                     f"Failed to save result with index {idx} ({example_id=}): {e}"
                 )
+                raise
 
 
 def _get_last_nonempty_line_bounds(file_obj: Any) -> tuple[int, bytes] | None:

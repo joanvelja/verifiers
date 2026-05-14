@@ -32,15 +32,16 @@ headers = { "X-Custom-Header" = "value" }
 ```bash
 prime eval run my-env -m openai/gpt-4.1-mini -n 50 -r 3 -s
 ```
-2. Run GEPA:
+2. For v1 Taskset + Harness environments, confirm prompt-like fields are exposed in the saved state or task info before GEPA reflection; BYO Harness implementations may render richer trajectories than classic `MultiTurnEnv` examples.
+3. Run GEPA:
 ```bash
 prime gepa run my-env -m openai/gpt-4.1-mini -M openai/gpt-4.1-mini -B 500 -n 100 -N 50
 ```
-3. Or run from config:
+4. Or run from config:
 ```bash
-prime gepa run configs/gepa/wordle.toml
+prime gepa run configs/gepa/qwen-3-5.toml
 ```
-4. Re-evaluate with optimized prompt and compare against baseline.
+5. Re-evaluate with optimized prompt and compare against baseline.
 
 ## High-Value Settings
 1. `-B/--max-calls`: total optimization budget.
@@ -51,9 +52,10 @@ prime gepa run configs/gepa/wordle.toml
 
 ## Output Artifacts
 Expect and inspect:
-1. `best_prompt.txt`
+1. `system_prompt.txt`
 2. `pareto_frontier.jsonl`
 3. `metadata.json`
+Load optimized prompts with `vf.SystemMessage.from_path("/path/to/system_prompt.txt")` so the saved prompt is used verbatim.
 
 ## Quality Rules
 1. Do not optimize on top of broken reward logic.

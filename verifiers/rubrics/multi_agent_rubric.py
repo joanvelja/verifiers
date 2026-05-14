@@ -9,8 +9,6 @@ consumers (wandb, GRPO advantage) see the same shape as single-agent
 rubrics.
 """
 
-from __future__ import annotations
-
 import asyncio
 from abc import abstractmethod
 from collections import defaultdict
@@ -35,6 +33,19 @@ class MultiAgentRubric(Rubric):
     """
 
     members: list[str]
+
+    def __init__(self, members: list[str] | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        if members is not None:
+            self.members = members
+        self._validate_members()
+
+    def _validate_members(self) -> None:
+        members = getattr(self, "members", None)
+        if not members:
+            raise ValueError("MultiAgentRubric.members must be non-empty")
+        if len(members) != len(set(members)):
+            raise ValueError(f"Duplicate member_id in MultiAgentRubric: {members}")
 
     @abstractmethod
     async def build_marscore(self, state: State) -> MARScore: ...

@@ -1,9 +1,15 @@
-from __future__ import annotations
+"""MCQ answer normalization.
+
+Callers pass already-parsed (post-``parse_channels``) text. No think-tag
+handling lives here.
+"""
 
 import re
 
 _XML_STRIP_RE = re.compile(r"</?[^>]+>")
 
+
+# Pre-filter patterns (disqualify ambiguous/hedged responses)
 _HEDGE_RE = re.compile(
     r"(?i)\b(not sure|uncertain|cannot determine|i(?:'m| am) unsure)\b"
 )

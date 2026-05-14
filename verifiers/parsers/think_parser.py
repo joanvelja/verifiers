@@ -5,7 +5,7 @@ from verifiers.types import Messages
 
 
 class ThinkParser(Parser):
-    def __init__(self, extract_fn: Callable[[str], str] = lambda x: x):
+    def __init__(self, extract_fn: Callable[[str], str | None] = lambda x: x):
         super().__init__(extract_fn=extract_fn)
         self.extract_fn = extract_fn
         self.logger.warning(
@@ -14,7 +14,7 @@ class ThinkParser(Parser):
             "In particular, you should NOT use this parser with Qwen3 or DeepSeek-R1 models."
         )
 
-    def parse(self, text: str) -> str:
+    def parse(self, text: str) -> str | None:
         if "</think>" in text:
             text = text.split("</think>")[-1].strip()
         else:  # do not allow any further extraction/ parsing if no </think> is found

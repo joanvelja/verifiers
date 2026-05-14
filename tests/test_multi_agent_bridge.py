@@ -106,9 +106,7 @@ def test_bridge_rejects_unknown_member_in_trajectory() -> None:
         rollout_to_member_rollouts(out)
 
 
-def test_bridge_known_member_with_no_steps_yields_empty_trajectory() -> None:
-    """An MARScore member with no trajectory steps is allowed (judge-less
-    debater that errored before generating)."""
+def test_bridge_rejects_non_errored_member_with_no_steps() -> None:
     out = _output(
         trajectory=[_step("A")],
         mar_score=MARScore(
@@ -119,6 +117,24 @@ def test_bridge_known_member_with_no_steps_yields_empty_trajectory() -> None:
             episode_scalar=1.0,
         ).model_dump(exclude_none=True),
     )
+
+    with pytest.raises(ValueError, match="B"):
+        rollout_to_member_rollouts(out)
+
+
+def test_bridge_allows_errored_member_with_no_steps() -> None:
+    out = _output(
+        error={"error": "ModelError"},
+        trajectory=[_step("A")],
+        mar_score=MARScore(
+            members=[
+                MemberScore(member_id="A", reward=0.0),
+                MemberScore(member_id="B", reward=0.0),
+            ],
+            episode_scalar=0.0,
+        ).model_dump(exclude_none=True),
+    )
+
     members = rollout_to_member_rollouts(out)
     by_id = {m["member_id"]: m for m in members}
     assert len(by_id["A"]["trajectory"]) == 1
@@ -136,7 +152,16 @@ def test_bridge_episode_id_from_trajectory_id() -> None:
 
 
 @pytest.mark.parametrize(
-    "reserved_key", ["reward", "example_id", "task", "metrics", "trajectory"]
+    "reserved_key",
+    [
+        "reward",
+        "example_id",
+        "task",
+        "metrics",
+        "trajectory",
+        "error_chain",
+        "long_error_chain",
+    ],
 )
 def test_marscore_episode_metrics_reserved_key_rejected(reserved_key: str) -> None:
     mar = MARScore(
@@ -148,7 +173,10 @@ def test_marscore_episode_metrics_reserved_key_rejected(reserved_key: str) -> No
         mar.to_metrics_flat()
 
 
-@pytest.mark.parametrize("reserved_key", ["reward", "example_id", "task", "metrics"])
+@pytest.mark.parametrize(
+    "reserved_key",
+    ["reward", "example_id", "task", "metrics", "error_chain", "long_error_chain"],
+)
 def test_marscore_member_metrics_reserved_key_rejected(reserved_key: str) -> None:
     mar = MARScore(
         members=[MemberScore(member_id="A", reward=1.0, metrics={reserved_key: 0.5})],
@@ -190,6 +218,42 @@ class _FakeMARubric(MultiAgentRubric):
             members=[MemberScore(member_id="A", reward=0.0)],
             episode_scalar=0.0,
         )
+
+
+class _MissingMembersRubric(MultiAgentRubric):
+    async def build_marscore(self, state):  # pragma: no cover - never called
+        return MARScore(
+            members=[MemberScore(member_id="A", reward=0.0)],
+            episode_scalar=0.0,
+        )
+
+
+class _EmptyMembersRubric(MultiAgentRubric):
+    members = []
+
+    async def build_marscore(self, state):  # pragma: no cover - never called
+        return MARScore(members=[], episode_scalar=0.0)
+
+
+class _DuplicateMembersRubric(MultiAgentRubric):
+    members = ["A", "A"]
+
+    async def build_marscore(self, state):  # pragma: no cover - never called
+        return MARScore(
+            members=[MemberScore(member_id="A", reward=0.0)],
+            episode_scalar=0.0,
+        )
+
+
+def test_multi_agent_rubric_requires_members() -> None:
+    with pytest.raises(ValueError, match="members"):
+        _MissingMembersRubric()
+
+    with pytest.raises(ValueError, match="members"):
+        _EmptyMembersRubric()
+
+    with pytest.raises(ValueError, match="Duplicate"):
+        _DuplicateMembersRubric()
 
 
 class _FakeEnv:

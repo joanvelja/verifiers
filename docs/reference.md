@@ -6,6 +6,7 @@
 - [Data Types](#data-types)
 - [Classes](#classes)
   - [Environment Classes](#environment-classes)
+  - [v1 Taskset/Harness Classes](#v1-tasksetharness-classes)
   - [Parser Classes](#parser-classes)
   - [Rubric Classes](#rubric-classes)
 - [Client Classes](#client-classes)
@@ -33,6 +34,19 @@ ChatMessage = ChatCompletionMessageParam  # from openai.types.chat
 ```
 
 OpenAI's chat message type with `role`, `content`, and optional `tool_calls` / `tool_call_id` fields.
+
+### SystemMessage
+
+```python
+class SystemMessage:
+    role: Literal["system"] = "system"
+    content: MessageContent
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> "SystemMessage": ...
+```
+
+Provider-agnostic system message type. Use `vf.SystemMessage.from_path(...)` to load a system prompt from a UTF-8 text file while preserving the file contents verbatim.
 
 ### Info
 
@@ -67,7 +81,10 @@ ClientType = Literal[
     "openai_completions",
     "openai_chat_completions",
     "openai_chat_completions_token",
+    "openai_responses",
+    "renderer",
     "anthropic_messages",
+    "nemorl_chat_completions",
 ]
 ```
 
@@ -81,7 +98,7 @@ Selects which `Client` implementation to use. Set via `ClientConfig.client_type`
 
 ```python
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
 ```
 
 A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIELDS` automatically forwards to the nested `input` object.
@@ -115,12 +132,11 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 ### RolloutInput
 
 ```python
-class RolloutInput(TypedDict, total=False):
-    prompt: Messages         # Required
-    example_id: int | str    # Required
-    task: str                # Required
-    answer: str              # Optional
-    info: Info | str         # Optional
+class RolloutInput(TypedDict):
+    prompt: Messages        # Required
+    example_id: int         # Required
+    answer: str             # Optional
+    info: Info              # Optional
 ```
 
 ### RolloutOutput
@@ -128,8 +144,7 @@ class RolloutInput(TypedDict, total=False):
 ```python
 class RolloutOutput(dict):
     # Required fields
-    example_id: int | str
-    task: str
+    example_id: int
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -137,20 +152,17 @@ class RolloutOutput(dict):
     is_completed: bool
     is_truncated: bool
     metrics: dict[str, float]
-    sampling_args: SamplingArgs
-    trajectory_id: str
     # Optional fields
     answer: str
     info: Info
-    error: ErrorInfo | None
+    error: str | None
     stop_condition: str | None
-    trajectory: list[TrajectoryStep]
-    tool_defs: list[Tool]
     token_usage: TokenUsage
-    mar_score: MARScore  # populated by MultiAgentRubric subclasses
+    trajectory: list[TrajectoryStep]
+    tool_defs: list[Tool] | None
 ```
 
-Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk. `mar_score` is populated only when a `MultiAgentRubric` subclass handled scoring; use `verifiers.rollout_to_member_rollouts(output)` to split an episode-level output into per-member `MemberRollout` records for training.
+Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
 
 ### TrajectoryStep
 
@@ -181,19 +193,71 @@ class TrajectoryStepTokens(TypedDict):
     overlong_prompt: bool
     is_truncated: bool
     routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk] to enable router replay
+    multi_modal_data: NotRequired[Any]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
 ```
 
 Token-level data for training.
 
+### TimeSpan
+
+```python
+class TimeSpan(CustomBaseModel):
+    """A timed span. duration = end - start."""
+    start: float = 0.0   # Unix timestamp (seconds since epoch)
+    end: float = 0.0     # Unix timestamp (seconds since epoch)
+    # duration: float    (computed_field)
+```
+
+### TimeSpans
+
+```python
+class TimeSpans(CustomBaseModel):
+    """A list of TimeSpan with aggregate duration (sum)."""
+    spans: list[TimeSpan] = []
+    # duration: float    (computed_field)
+```
+
 ### RolloutTiming
 
 ```python
-class RolloutTiming(TypedDict, total=False):
-    start_time: float
-    generation_ms: float
-    scoring_ms: float
-    total_ms: float
+class RolloutTiming(CustomBaseModel):
+    """Rollout-level timing. All values in seconds."""
+    start_time: float                       # wall-clock at rollout start
+    setup: TimeSpan = TimeSpan()            # setup_state() span
+    generation: TimeSpan = TimeSpan()       # full generation phase
+    scoring: TimeSpan = TimeSpan()          # rubric.score_*() span
+    model: TimeSpans = TimeSpans()          # all model-call spans
+    env: TimeSpans = TimeSpans()            # all env-response spans
+    # total, overhead: float                (computed_fields)
 ```
+
+Derivations:
+
+- `total    = scoring.end - generation.start`
+- `overhead = total - setup.duration - model.duration - env.duration - scoring.duration`
+
+`generation.start` is stamped at the top of the rollout (before `setup_state`), so `total` covers the entire rollout including setup, generation loop, finalize, and scoring. `overhead` captures any time not attributed to the named phases.
+
+### TokenUsage
+
+```python
+class TokenUsage(TypedDict, total=False):
+    input_tokens: float
+    output_tokens: float
+    final_input_tokens: float
+    final_output_tokens: float
+```
+
+| Field | Description |
+|-------|-------------|
+| `input_tokens` | Sum of prompt tokens across all turns. Shared context is counted each time it appears in a prompt. |
+| `output_tokens` | Sum of completion tokens across all turns. |
+| `final_input_tokens` | Non-completion tokens in the final turn's context (system prompts, user messages, tool results, etc.). |
+| `final_output_tokens` | Completion tokens in the final turn's context. Equals `output_tokens` for single-turn rollouts. |
+
+In a single-turn rollout, `input_tokens == final_input_tokens` and `output_tokens == final_output_tokens`. In a multi-turn rollout, `input_tokens > final_input_tokens` because earlier turns' prompts are counted again.
+
+The `final_*` metrics assume a single, continuously extended trajectory. Non-linear trajectories (multi-agent, context summarization, history rewriting) are not accounted for.
 
 ### GenerateOutputs
 
@@ -204,78 +268,6 @@ class GenerateOutputs(TypedDict):
 ```
 
 Output from `Environment.generate()`. Contains a list of `RolloutOutput` objects (one per rollout) and generation metadata. Each `RolloutOutput` is a serialized, JSON-compatible dict containing the rollout's prompt, completion, answer, reward, metrics, timing, and other per-rollout data.
-
-### MemberScore
-
-```python
-class MemberScore(CustomBaseModel):
-    member_id: str
-    reward: float
-    parse_error_count: int = 0
-    metrics: dict[str, float] = Field(default_factory=dict)
-```
-
-Per-member outcome of one episode in a multi-agent rollout. The bridge consumes
-`reward` as the training signal and uses `member_id` as the advantage-baseline
-partition key in RAE. `metrics` projects to wandb as `f"{k}/{member_id}"` at
-the serialization boundary; `parse_error_count` propagates to
-`f"parse_errors/{member_id}"` when non-zero. `metrics` is intentionally
-float-only — bools and ints must be converted at the producer site so the
-aggregator can average without a type check.
-
-### MARScore
-
-```python
-class MARScore(CustomBaseModel):
-    members: list[MemberScore]
-    episode_scalar: float
-    episode_metrics: dict[str, float] = Field(default_factory=dict)
-    episode_categorical: dict[str, str | None] = Field(default_factory=dict)
-    episode_error: dict[str, str] | None = None
-```
-
-Member-Attributed Reward — single source of truth for episode scoring in
-multi-agent rollouts. Replaces the legacy multi-key spread across
-`state["reward"]`, `state["metrics"]`, and `state["member_rewards"]`.
-
-Episode-level telemetry is split by purpose so the wandb projection can't
-accidentally average a categorical sentinel:
-
-- `episode_metrics` — averageable scalars only (accuracy, agreement, etc.)
-- `episode_categorical` — codes/labels (e.g. winner = "debater_a"/"tie"/None)
-- `episode_error` — error metadata when the rollout failed
-
-Schema invariants (duplicate `member_id`, empty members) are enforced at
-construction so drift between rubric writer and bridge reader is structurally
-impossible.
-
-**Methods:**
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `by_id()` | `dict[str, MemberScore]` | Lookup table keyed by `member_id` |
-| `to_metrics_flat()` | `dict[str, float]` | Flat wandb projection: episode scalars stay top-level; per-member metrics become `f"{k}/{member_id}"`; `reward` and `parse_error_count` get canonical prefixes. Rejects keys that collide with reserved `RolloutOutput` fields. |
-
-### MemberRollout
-
-```python
-class MemberRollout(TypedDict):
-    # Training-path fields (read by pretokenize -> interleave -> TrainingSample)
-    example_id: int | str
-    task: str
-    trajectory: list[TrajectoryStep]
-    sampling_args: dict[str, Any]
-    error: ErrorInfo | None
-    reward: float
-    # Multi-agent metadata
-    episode_id: str
-    member_id: str
-```
-
-`RolloutOutput`-compatible dict with per-member multi-agent metadata. Produced
-by `verifiers.rollout_to_member_rollouts(output)`, which splits one
-episode-level `RolloutOutput` into one trainable rollout per member keyed on
-`(task, example_id, member_id)`.
 
 ### GenerateMetadata
 
@@ -355,52 +347,7 @@ class Environment(ABC):
     ): ...
 ```
 
-#### MultiAgentEnv
-
-```python
-class MultiAgentEnv(Environment):
-    def __init__(
-        self,
-        *,
-        schedule: SlotProgram,
-        members: list[str],
-        agent_overrides: dict[str, tuple[Client | None, str | None]] | None = None,
-        think_tag: str = "thinking",
-        **kwargs,
-    ): ...
-
-    async def build_prompt(
-        self, state: State, member_id: str, slot: TurnSlot
-    ) -> Messages: ...
-
-    async def render_completion(self, state: State) -> None: ...
-```
-
-Base class for N-actor rollout environments that share a transcript and a
-slot-based schedule.
-
-`MultiAgentEnv` is the real multi-agent runtime surface. It is not a protocol
-for external session orchestration; it is an `Environment` subclass that owns:
-
-- slot-scheduled rollout (`TurnSlot`, `SlotProgram`, `StaticSchedule`)
-- sequential vs simultaneous turn execution
-- atomic simultaneous-slot publish
-- stop conditions (`has_error`, `schedule_exhausted`, `prompt_too_long`)
-- trajectory-step construction tagged with `extras["member_id"]`
-- lineage-aware prompt caching support for token-stitch clients
-
-Subclasses supply the domain-specific pieces:
-
-- `build_prompt(state, member_id, slot)`
-- `render_completion(state)`
-- optional `extract_fields(...)`
-- optional `visibility_policy(...)`
-
-Multi-agent scoring writes one structured `state["mar_score"]` payload. At the
-serialization boundary, `state_to_output(...)` projects that to legacy
-episode-level keys. If you need one trainable rollout per actor, use
-`verifiers.rollout_to_member_rollouts(output)`, which returns
-`MemberRollout` records.
+Abstract base class for all environments.
 
 **Generation methods:**
 
@@ -448,7 +395,12 @@ Single-response Q&A tasks. Inherits from `Environment`.
 
 ```python
 class MultiTurnEnv(Environment):
-    def __init__(self, max_turns: int = -1, **kwargs): ...
+    def __init__(
+        self,
+        max_turns: int = -1,
+        timeout_seconds: float | None = None,
+        **kwargs,
+    ): ...
 ```
 
 Multi-turn interactions. Subclasses must implement `env_response`.
@@ -460,7 +412,7 @@ async def env_response(self, messages: Messages, state: State, **kwargs) -> Mess
     """Generate environment feedback after model turn."""
 ```
 
-**Built-in stop conditions:** `has_error`, `prompt_too_long`, `max_turns_reached`, `max_total_completion_tokens_reached`, `has_final_env_response`
+**Built-in stop conditions:** `has_error`, `prompt_too_long`, `max_turns_reached`, `timeout_reached`, `max_total_completion_tokens_reached`, `has_final_env_response`
 
 **Hooks:**
 
@@ -552,11 +504,11 @@ Persistent Python REPL in sandbox. Extends `SandboxEnv`.
 class OpenEnvEnv(MultiTurnEnv):
     def __init__(
         self,
-        openenv_project: str | Path,
+        openenv_project: str | Path | None = None,
         num_train_examples: int = 100,
         num_eval_examples: int = 50,
         seed: int = 0,
-        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        prompt_renderer: Callable[..., Messages] | None = None,
         max_turns: int = -1,
         rubric: Rubric | None = None,
         **kwargs,
@@ -565,16 +517,261 @@ class OpenEnvEnv(MultiTurnEnv):
 
 OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebuilt image manifest (`.build.json`), supports both gym and MCP contracts, and requires a `prompt_renderer` to convert observations into chat messages.
 
+#### SWEDebugEnv
+
+```python
+class SWEDebugEnv(SandboxMixin, MultiTurnEnv):
+    def __init__(
+        self,
+        taskset: SandboxTaskSet,
+        dataset: Any = None,
+        *,
+        run_setup: bool = True,
+        debug_step: Literal["none", "gold_patch", "command", "script"] = "gold_patch",
+        run_tests: bool = True,
+        debug_command: str | None = None,
+        debug_script: str | None = None,
+        debug_script_path: str | None = None,
+        debug_timeout: int | None = None,
+        test_timeout: int = 900,
+        cpu_cores: int | None = None,
+        memory_gb: int | None = None,
+        disk_size_gb: int | None = None,
+        labels: list[str] | None = None,
+        timeout_seconds: float = 1800.0,
+        output_tail_chars: int = 2000,
+        **sandbox_kwargs,
+    ): ...
+```
+
+No-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result.
+
 #### EnvGroup
 
 ```python
 env_group = vf.EnvGroup(
     envs=[env1, env2, env3],
-    names=["math", "code", "qa"]  # optional
+    env_names=["math", "code", "qa"]  # optional
 )
 ```
 
-Combines multiple environments for mixed-task training.
+Combines multiple environments for mixed-task training. Combined datasets use
+`info["env_id"]` as internal routing metadata; it is not a top-level input,
+state, or output field.
+
+---
+
+### v1 Taskset/Harness Classes
+
+The v1 API is exposed as `verifiers.v1` and documented in
+[BYO Harness](byo-harness.md). Its core unit is:
+
+```python
+state = await harness.run(task, state=None)
+```
+
+`Taskset` and `Env` package that runner for datasets, evals, and training.
+
+#### Task
+
+```python
+class Task(dict):
+    def freeze(self) -> Task: ...
+```
+
+Immutable, JSON-serializable input data. A task is usually created by a
+`Taskset`, but can be run directly through a standalone `Harness`.
+
+Common top-level fields:
+
+| Field | Description |
+|-------|-------------|
+| `prompt` | User/developer/tool messages for the rollout. Must not contain system messages. |
+| `system_prompt` | Per-task system messages or string. |
+| `answer` | Reference answer or target data. Stays on task, not state. |
+| `info` | Serializable metadata. |
+| `max_turns` | Per-task base-loop turn limit. |
+| `tools` | Tool visibility: `{"show": [...]}` or `{"hide": [...]}`. |
+| `toolsets` | Toolset visibility or rollout-local toolset config. |
+| `sandbox` | Per-task sandbox overrides for sandboxed programs. |
+| `program` | Task-owned files, dirs, env, setup, artifacts, bindings, and command args. |
+
+`task.runtime` is not public schema. Runtime metadata belongs on `State`.
+
+#### State
+
+```python
+class State(dict):
+    @classmethod
+    def for_task(task: Mapping[str, Any], ...) -> State: ...
+    def stop(self, condition: str = "state_done") -> None: ...
+    def get_model(self) -> str: ...
+    def get_client(api: str = "chat_completions", *, sync: bool = False) -> object: ...
+    def get_endpoint_config(api: str = "chat_completions") -> dict[str, str]: ...
+    def get_tools() -> dict[str, Callable[..., Awaitable[object]]]: ...
+    def get_max_turns(default: int) -> int: ...
+    def finalize() -> State: ...
+```
+
+Mutable rollout output. State starts from a task and accumulates trajectory,
+completion, metrics, reward, timing, artifacts, errors, and user-defined
+serializable fields.
+
+Framework-managed fields such as `is_completed`, `stop_condition`,
+`is_truncated`, and `error` cannot be written directly. Use `state.stop(...)` or
+raise `vf.Error` subclasses.
+
+`State.for_task(...)` can borrow selected active runtime handles from another
+state:
+
+```python
+child_state = state.for_task(child_task, borrow=["model", "sandbox"], tools="bash")
+child_state = await child_harness.run(child_task, child_state)
+```
+
+Borrowed handles are process-local and stripped before state crosses the
+serialization boundary.
+
+#### Taskset
+
+```python
+class Taskset:
+    def __init__(
+        source=None,
+        eval_source=None,
+        taskset_id: str | None = None,
+        system_prompt=None,
+        user=None,
+        toolsets=(),
+        stops=(),
+        setups=(),
+        updates=(),
+        metrics=(),
+        rewards=(),
+        advantages=(),
+        cleanups=(),
+        config: TasksetConfig | Mapping[str, object] | None = None,
+    ): ...
+
+    def rows() -> list[dict[str, Any]]: ...
+    def eval_rows() -> list[dict[str, Any]]: ...
+    def task(row: Mapping[str, Any]) -> Task: ...
+    def to_task(value: Mapping[str, Any] | Task | str) -> Task: ...
+    async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
+    def get_dataset() -> Dataset: ...
+    def get_eval_dataset() -> Dataset: ...
+```
+
+Packages task rows and task-owned behavior. `source` and `eval_source` may be
+iterables or zero-argument loaders. Loaders should close over resolved config
+instead of accepting runtime kwargs.
+
+#### Harness
+
+```python
+class Harness:
+    def __init__(
+        program=None,
+        system_prompt=None,
+        user=None,
+        sandbox=None,
+        client=None,
+        model: str | None = None,
+        sampling_args: SamplingArgs | None = None,
+        max_turns: int | None = None,
+        toolsets=None,
+        stops=None,
+        setups=None,
+        updates=None,
+        metrics=None,
+        rewards=None,
+        advantages=None,
+        cleanups=None,
+        config: HarnessConfig | Mapping[str, object] | None = None,
+    ): ...
+
+    async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
+    async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...
+    async def cleanup_group(tasks: list[Task], states: list[State]) -> None: ...
+    async def teardown() -> None: ...
+```
+
+Runs one task. All model calls go through the v1 interception endpoint so
+trajectory capture, sampling args, tool forwarding, and protocol translation use
+one path across local Python, sandboxed Python, command programs, and the base
+tool loop.
+
+`program` forms:
+
+| Form | Meaning |
+|------|---------|
+| `None` | Default endpoint-backed tool loop. |
+| callable | In-process Python program with `task, state`. |
+| `{"base": true, ...}` | Explicit default loop, usually with sandbox options. |
+| `{"fn": "pkg.module:run", ...}` | Importable Python program. |
+| `{"command": ["cmd", "arg"], ...}` | Local or sandboxed command. |
+
+Sandboxed `program.fn` refs resolve their owning local package from the resolved
+module root: single-file modules use `pyproject.toml` in the same directory as
+the module file, and package modules use `pyproject.toml` inside the package
+directory. v1 uploads and installs that package in the program sandbox. Package
+dependencies come from normal `[project.dependencies]`.
+
+#### Env
+
+```python
+class Env(vf.Environment):
+    def __init__(taskset: Taskset, harness: Harness | None = None): ...
+```
+
+Adapter that makes a v1 taskset/harness pair usable by eval and training
+workers. If `harness` is omitted, `Env` uses the base `Harness`.
+
+#### Toolset And MCPTool
+
+```python
+class Toolset:
+    def __init__(
+        tools=(),
+        show=None,
+        hide=None,
+        bindings=None,
+        objects=None,
+        write: bool = False,
+        scope: Literal["rollout", "group", "global"] | None = None,
+        sandbox=None,
+        stops=(),
+        setups=(),
+        updates=(),
+        cleanups=(),
+        teardowns=(),
+        config: ToolsetConfig | Mapping[str, object] | None = None,
+    ): ...
+
+class MCPTool:
+    def __init__(command: str, args=None, env=None, cwd: str | None = None): ...
+```
+
+Toolsets package callable tools, MCP servers, private dependency factories,
+hidden bindings, and tool-owned lifecycle handlers. `objects.*` bindings are
+private to the owning toolset/user and are not directly accessible from state.
+String binding sources are framework paths; literal strings should be bound via
+callable sources.
+
+#### v1 Config Models
+
+```python
+TasksetConfig.from_toml(path, section=None)
+HarnessConfig.from_toml(path, section=None)
+ToolsetConfig(...)
+SandboxConfig(...)
+UserConfig(...)
+MCPToolConfig(...)
+```
+
+v1 config models are Pydantic models. Constructors accept config objects or
+plain mappings; TOML config uses `"module:object"` refs for Python callables and
+loaders. Unknown fields fail validation.
 
 ---
 
@@ -674,7 +871,6 @@ def my_reward(
     prompt: Messages | None = None,
     state: State | None = None,
     parser: Parser | None = None,  # if rubric has parser
-    task: str = "",
     info: Info | None = None,
     **kwargs
 ) -> float:
@@ -753,10 +949,13 @@ Abstract base class for all model clients. Wraps a provider-specific SDK client 
 |-------|---------------|------------|-------------|
 | `OpenAIChatCompletionsClient` | `"openai_chat_completions"` | `AsyncOpenAI` | Chat Completions API (default) |
 | `OpenAICompletionsClient` | `"openai_completions"` | `AsyncOpenAI` | Legacy Completions API |
-| `OpenAIChatCompletionsTokenClient` | `"openai_chat_completions_token"` | `AsyncOpenAI` | Custom vLLM token route |
+| `OpenAIChatCompletionsTokenClient` | `"openai_chat_completions_token"` | `AsyncOpenAI` | Custom vLLM token route (`/v1/chat/completions/tokens`) — server-side templating + token IDs returned alongside content |
+| `OpenAIResponsesClient` | `"openai_responses"` | `AsyncOpenAI` | OpenAI Responses API |
+| `RendererClient` | `"renderer"` | `AsyncOpenAI` | Renderer-backed token-in generate client (client-side tokenization via the `renderers` package) |
 | `AnthropicMessagesClient` | `"anthropic_messages"` | `AsyncAnthropic` | Anthropic Messages API |
+| `NeMoRLChatCompletionsClient` | `"nemorl_chat_completions"` | `AsyncOpenAI` | NeMo-RL Chat Completions variant |
 
-All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc.
+All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc. `RendererClient` requires the optional renderer package; install it with `uv add "verifiers[renderers]"` before importing `vf.RendererClient` or using `client_type="renderer"`.
 
 ### Response
 
@@ -795,12 +994,57 @@ Provider-agnostic tool definition. Environments define tools using this type; ea
 
 ## Configuration Types
 
+### v1 Config
+
+```python
+class Config(BaseModel):
+    def __init__(self, config: object | None = None, /, **data: object): ...
+
+    @classmethod
+    def from_config(cls, config: object | None = None, /, **data: object) -> Self: ...
+
+    @classmethod
+    def from_toml(
+        cls, path: str | Path, section: str | Iterable[str] | None = None
+    ) -> Self: ...
+
+class EnvConfig(Config):
+    args: object | None = None
+    taskset: object | None = None
+    harness: object | None = None
+
+class TasksetConfig(Config):
+    taskset_id: str | None = None
+    system_prompt: object | None = None
+    source: object | None = None
+    eval_source: object | None = None
+    user: object | None = None
+
+class HarnessConfig(Config):
+    program: object | None = None
+    system_prompt: object | None = None
+    sandbox: SandboxConfig | None = None
+    model: str | None = None
+    sampling_args: dict[str, object] = {}
+    max_turns: int = 10
+```
+
+`EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
+`[env.harness]` sections flow to `config.taskset` and `config.harness`;
+environment-specific named args flow through `[env.args]`.
+
+`Config` subclasses accept a positional source config plus direct keyword
+overrides. The source object is positional-only so subclasses can define a real
+field named `config`.
+
 ### ClientConfig
 
 ```python
 class ClientConfig(BaseModel):
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
+    preserve_all_thinking: bool = False
+    preserve_thinking_between_tool_calls: bool = False
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list[EndpointClientConfig] = []
@@ -816,6 +1060,8 @@ class ClientConfig(BaseModel):
 `extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "example_id"}` adds a `X-Session-ID` header with the value of `state["example_id"]`, enabling sticky routing at the inference router level.
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
+
+`preserve_all_thinking` and `preserve_thinking_between_tool_calls` are forwarded to the underlying renderer when `client_type == "renderer"`. They control whether past-assistant `reasoning_content` is re-emitted on subsequent renders — `preserve_all_thinking` keeps every past-assistant turn's thinking, and `preserve_thinking_between_tool_calls` keeps thinking only inside the in-flight assistant→tool→…→assistant block after the most recent user turn (when that block contains at least one tool response). Both default to `False` (template default applies).
 
 When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
 - **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`

@@ -1,9 +1,6 @@
-import base64
 import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
-
-import numpy as np
 
 from openai import (
     AsyncOpenAI,
@@ -36,10 +33,10 @@ from openai.types.chat.chat_completion_user_message_param import (
 from openai.types.shared_params import FunctionDefinition
 
 from verifiers.api_profile import (
-    ApiProfile,
     filter_sampling_args_for_profile,
 )
 from verifiers.clients.client import Client
+from verifiers.clients.routed_experts import parse_routed_experts
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -80,12 +77,14 @@ def handle_openai_overlong_prompt(func):
             context_length_phrases = [
                 "this model's maximum context length is",
                 "is longer than the model's context length",
+                "is longer than the maximum model length",
                 "exceeds the model's context length",
                 "exceed the configured limit",
                 "exceeds the configured limit",
                 "exceeded model",
                 "prompt_too_long",
                 "context length",
+                "maximum model length",
             ]
             if any(phrase in error_text for phrase in context_length_phrases):
                 raise OverlongPromptError from e
@@ -163,8 +162,6 @@ class OpenAIChatCompletionsClient(
     ``profile=ApiProfile.VLLM_PERMISSIVE`` at construction (or set it on
     ``ClientConfig.profile``) to opt back in.
     """
-
-    _default_profile: ApiProfile = ApiProfile.OPENAI_STRICT
 
     # Tracks stripped keys already warned about so a single misconfig
     # surfaces once per client lifetime instead of spamming per request.
@@ -281,6 +278,31 @@ class OpenAIChatCompletionsClient(
     ) -> OpenAIChatResponse:
         def normalize_sampling_args(sampling_args: SamplingArgs):
             sampling_args = dict(sampling_args)
+            api_base_url = None
+            if hasattr(self.client, "base_url"):
+                api_base_url = str(self.client.base_url)
+            elif self._config is not None:
+                api_base_url = self._config.api_base_url
+            reasoning_effort = sampling_args.pop("reasoning_effort", None)
+            model_id = model.lower().split("/")[-1].replace(".", "-").replace("_", "-")
+            is_anthropic_route = (
+                "openrouter.ai" in (api_base_url or "").lower()
+                or "pinference.ai" in (api_base_url or "").lower()
+            )
+            if (
+                reasoning_effort is not None
+                and model_id.startswith("claude-")
+                and is_anthropic_route
+            ):
+                # OpenRouter/Pinference route Anthropic reasoning_effort through extra_body.
+                extra_body = dict(sampling_args.get("extra_body") or {})
+                extra_body["verbosity"] = reasoning_effort
+                reasoning = dict(extra_body.get("reasoning") or {})
+                reasoning.setdefault("enabled", True)
+                extra_body["reasoning"] = reasoning
+                sampling_args["extra_body"] = extra_body
+            elif reasoning_effort is not None:
+                sampling_args["reasoning_effort"] = reasoning_effort
             if "max_tokens" in sampling_args:
                 sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
             filtered, stripped = filter_sampling_args_for_profile(
@@ -493,27 +515,8 @@ class OpenAIChatCompletionsClient(
                 logprobs_content = response.choices[0].logprobs["content"]
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
-            has_routed_experts = (
-                isinstance(
-                    routed_experts := getattr(choice, "routed_experts", None), dict
-                )
-                and "data" in routed_experts
-                and "shape" in routed_experts
-            )
-            if has_routed_experts:
-                routed_experts = cast(dict[str, Any], routed_experts)
-                routed_experts = cast(
-                    list[list[list[int]]],
-                    (
-                        np.frombuffer(
-                            base64.b85decode(routed_experts["data"]), dtype=np.int32
-                        )
-                        .reshape(routed_experts["shape"])
-                        .tolist()
-                    ),
-                )  # [seq_len, layers, topk]
-            else:
-                routed_experts = None
+            choice_extra = choice.model_extra or {}
+            routed_experts = parse_routed_experts(choice_extra.get("routed_experts"))
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,

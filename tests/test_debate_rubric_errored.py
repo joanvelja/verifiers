@@ -67,6 +67,4 @@ def test_preserves_parse_error_count_on_valid_trajectory(
 def test_propagates_value_error_on_missing_member_id(rubric: DebateRubric) -> None:
     state = {"trajectory": _malformed_trajectory()}
     with pytest.raises(ValueError, match="member_id"):
-        rubric.build_errored_marscore(
-            state, error_type="synthetic", error_phase="test"
-        )
+        rubric.build_errored_marscore(state, error_type="synthetic", error_phase="test")

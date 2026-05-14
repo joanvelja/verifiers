@@ -1,9 +1,7 @@
-from __future__ import annotations
-
 import json
-from typing import Any, Sequence
+from typing import Sequence
 
-from datasets import Dataset
+from datasets import Dataset, IterableDataset
 
 import verifiers as vf
 from verifiers.envs.debate.fields import EnumScoring
@@ -16,7 +14,7 @@ from verifiers.utils.hf_tasks import (
     normalize_hf_dataset,
 )
 
-DEFAULT_SCHEDULE = [
+DEFAULT_SCHEDULE: list[vf.ConfigData] = [
     {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
     {"slot_id": 1, "agents": ["debater_b"], "phase": "propose"},
     {"slot_id": 2, "agents": ["debater_a"], "phase": "critique"},
@@ -52,11 +50,11 @@ def load_environment(
     seed: int = 0,
     num_train_examples: int = -1,
     num_eval_examples: int = -1,
-    schedule: list[dict[str, Any]] | None = None,
+    schedule: list[vf.ConfigData] | None = None,
     prompts_ref: str | None = None,
     truth_member: str = "debater_a",
     judge_model: str = "gpt-5.4-nano",
-    **extra: Any,
+    **extra: object,
 ) -> vf.Environment:
     if system_prompt is not None:
         raise ValueError(
@@ -173,7 +171,7 @@ def _load_required_dataset(
     streaming_limit: int,
     streaming_shuffle_buffer_size: int | None,
     streaming_seed: int,
-) -> Dataset:
+) -> Dataset | IterableDataset:
     if dataset_name is None:
         raise ValueError("dataset_name is required when dataset is not provided")
     return load_hf_dataset(

@@ -1,8 +1,9 @@
 # Environments
 
-This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
+This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template. For reusable taskset/harness environments, see [BYO Harness](byo-harness.md).
 
 ## Table of Contents
+
 - [Your First Environment](#your-first-environment)
 - [Datasets](#datasets)
   - [Building the Prompt](#building-the-prompt)
@@ -50,14 +51,14 @@ def load_environment():
         {"prompt": [{"role": "user", "content": "What is 2+2?"}], "answer": "4"},
         {"prompt": [{"role": "user", "content": "What is 3*5?"}], "answer": "15"},
     ])
-    
+
     # Your reward function
     async def correct_answer(completion, answer) -> float:
         response = completion[-1]["content"]
         return 1.0 if answer in response else 0.0
-    
+
     rubric = vf.Rubric(funcs=[correct_answer])
-    
+
     return vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
 ```
 
@@ -87,8 +88,7 @@ dataset = Dataset.from_list([
 ])
 ```
 
-These are parsed into a `dict` by the environment when running rollouts. 
-
+These are parsed into a `dict` by the environment when running rollouts.
 
 ### Building the Prompt
 
@@ -111,6 +111,7 @@ return vf.SingleTurnEnv(
 ```
 
 Together, these construct the full prompt:
+
 ```python
 [
     {"role": "system", "content": "You are a helpful math tutor."},
@@ -150,7 +151,7 @@ def get_dataset_builder(split: str = "train", seed: int = 42) -> vf.DatasetBuild
 def load_environment():
     dataset_builder = get_dataset_builder(split="train")
     eval_builder = get_dataset_builder(split="test")
-    
+
     return vf.SingleTurnEnv(
         dataset=dataset_builder,      # built on first access
         eval_dataset=eval_builder,    # built on first access
@@ -159,6 +160,7 @@ def load_environment():
 ```
 
 The builder pattern is useful when:
+
 - Dataset loading is expensive (e.g., downloading from Hugging Face)
 - Multiple environment replicas don't all need to own the dataset
 - You want to parameterize dataset creation without loading it immediately
@@ -180,6 +182,7 @@ async def correct_answer(completion, answer) -> float:
 ```
 
 The basic available arguments, if present, are:
+
 - `completion` — the model's output (list of messages)
 - `prompt` — the input messages
 - `answer` — from dataset
@@ -212,6 +215,7 @@ rubric = vf.Rubric(
 The final rollout reward is computed as the weighted sum of all reward function scores.
 
 Reward functions can also be added to a rubric after initialization:
+
 ```python
 rubric = vf.Rubric()
 rubric.add_reward_func(check_keywords, weight=1.0)
@@ -269,7 +273,9 @@ rubric = vf.Rubric(funcs=[correct_answer, diversity_bonus])
 
 ### Shared Objects
 
-Beyond rollout data, reward functions can request static objects that live within the Rubric class. These are stored in the Rubric's `class_objects` dictionary, and can be added after initialization via `add_class_object()`:
+In rubric environments, reward functions can request static helper objects that
+live within the Rubric class. These are stored in the Rubric's `class_objects`
+dictionary, and can be added after initialization via `add_class_object()`:
 
 ```python
 rubric = vf.Rubric(funcs=[my_reward_func])
@@ -280,23 +286,13 @@ async def my_reward_func(completion, my_helper) -> float:
     return await my_helper.score(completion)
 ```
 
-Two common types of shared objects are **parsers** and **judges**.
+For taskset/harness environments, use taskset-owned `objects` and `bindings` as
+shown in [BYO Harness](byo-harness.md#shared-dependencies).
 
-Parsers encapsulate logic for extracting structured content from model responses. When passed to a rubric, the parser is automatically available to reward functions:
-
-```python
-parser = vf.XMLParser(["reasoning", "answer"])
-rubric = vf.Rubric(funcs=[my_reward_func], parser=parser)
-
-async def my_reward_func(completion, parser) -> float:
-    parsed = parser.parse_answer(completion)
-    # parsed.reasoning, parsed.answer available
-    ...
-```
-
-Parsers can also be passed to environments, where they are often used during rollouts to validate or extract content. This allows parsing logic to be shared between the environment's interaction loop and the rubric's reward functions.
-
-Judges are used for tasks where deterministic evaluation is impractical, and an LLM is used to score responses. **JudgeRubric** is a built-in class which stores an LLM client inside the rubric, and provides a `judge` callable to reward functions for scoring responses:
+Judges are used for tasks where deterministic evaluation is impractical, and an
+LLM is used to score responses. **JudgeRubric** stores an LLM client inside the
+rubric, and provides a `judge` callable to reward
+functions for scoring responses:
 
 ```python
 judge_rubric = vf.JudgeRubric(
@@ -362,12 +358,12 @@ For simple cases, metrics can be added directly to a rubric via `add_metric()` a
 
 Many environment types automatically include a monitor rubric that tracks metrics specific to their level of the environment class hierarchy:
 
-| Environment | Tracked Metrics |
-|-------------|-----------------|
-| `MultiTurnEnv` | `num_turns` |
-| `ToolEnv` | `total_tool_calls`, per-tool counts |
-| `SandboxEnv` | `sandbox_ready_wait_time`, `sandbox_command_execution_time` |
-| `PythonEnv` | `python_ready_wait_time` |
+| Environment    | Tracked Metrics                                             |
+| -------------- | ----------------------------------------------------------- |
+| `MultiTurnEnv` | `num_turns`                                                 |
+| `ToolEnv`      | `total_tool_calls`, per-tool counts                         |
+| `SandboxEnv`   | `sandbox_ready_wait_time`, `sandbox_command_execution_time` |
+| `PythonEnv`    | `python_ready_wait_time`                                    |
 
 These metrics appear automatically in rollout results alongside any custom reward functions.
 
@@ -378,7 +374,7 @@ class MyMonitorRubric(vf.Rubric):
     def __init__(self):
         super().__init__()
         self.add_metric(self.custom_metric)
-    
+
     async def custom_metric(self, state: vf.State) -> float:
         return len(state["trajectory"])
 
@@ -397,10 +393,10 @@ Tools are defined as Python functions. Verifiers extracts tool schemas from func
 ```python
 async def calculate(expression: str) -> str:
     """Evaluate a mathematical expression.
-    
+
     Args:
         expression: A mathematical expression to evaluate (e.g. "2 + 2 * 3")
-    
+
     Returns:
         The result of the evaluation.
     """
@@ -412,10 +408,10 @@ async def calculate(expression: str) -> str:
 
 async def lookup(term: str) -> str:
     """Look up a term in the knowledge base.
-    
+
     Args:
         term: The term to search for.
-    
+
     Returns:
         Information about the term.
     """
@@ -462,7 +458,7 @@ vf_env = vf.MCPEnv(
 
 `ToolEnv` and `MCPEnv` are designed for stateless, read-only tools where no session state needs to persist across calls within a rollout. For tools that require per-rollout state—such as a sandbox container, database connection, or session ID—use `StatefulToolEnv`.
 
-The `setup_state` method is called at the beginning of each rollout for all environments which extend `MultiTurnEnv`, but is a no-op by default (including in `ToolEnv`). 
+The `setup_state` method is called at the beginning of each rollout for all environments which extend `MultiTurnEnv`, but is a no-op by default (including in `ToolEnv`).
 
 `StatefulToolEnv` overrides this to initialize per-rollout resources, and introduces two additional concepts:
 
@@ -474,16 +470,16 @@ class MySandboxEnv(vf.StatefulToolEnv):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.add_tool(self.run_code, args_to_skip=["session_id"])
-    
+
     async def setup_state(self, state, **kwargs):
         state["session_id"] = await create_session()
-        return await super().setup_state(state, **kwargs)
-    
+        await super().setup_state(state, **kwargs)
+
     def update_tool_args(self, tool_name, tool_args, messages, state, **kwargs):
         if tool_name == "run_code":
             tool_args["session_id"] = state["session_id"]
         return tool_args
-    
+
     async def run_code(self, code: str, session_id: str) -> str:
         """Execute code in the sandbox."""
         return await execute_in_session(session_id, code)
@@ -527,26 +523,39 @@ The `env_response` method is an abstract method that must be overridden by all `
 
 ```python
 class MyGameEnv(vf.MultiTurnEnv):
+    def __init__(self, dataset, rubric, extract_action):
+        super().__init__(dataset=dataset, rubric=rubric)
+        self.extract_action = extract_action
+
     async def env_response(self, messages: vf.Messages, state: vf.State) -> vf.Messages:
         """Generate the environment's response after each model turn."""
-        parsed = self.parser.parse(messages)
-        action = parsed.action
+        action = self.extract_action(messages)
         feedback = process_action(action)
         return [{"role": "user", "content": feedback}]
 
 
-async def correct_action(parser, completion, answer) -> float:
-    parsed = parser.parse(completion)
-    return 1.0 if parsed.action == answer else 0.0
+class ActionExtractor:
+    def __call__(self, messages: vf.Messages) -> str:
+        text = messages[-1]["content"] if messages else ""
+        return str(text).strip()
+
+
+async def correct_action(extract_action, completion, answer) -> float:
+    return 1.0 if extract_action(completion) == answer else 0.0
 
 
 def load_environment():
-    parser = vf.XMLParser(fields=["action"])
-    rubric = vf.Rubric(funcs=[correct_action], parser=parser)
-    return MyGameEnv(dataset=dataset, rubric=rubric, parser=parser)
+    extract_action = ActionExtractor()
+    rubric = vf.Rubric(funcs=[correct_action])
+    rubric.add_class_object("extract_action", extract_action)
+    return MyGameEnv(dataset=dataset, rubric=rubric, extract_action=extract_action)
 ```
 
-`env_response` receives the full conversation history thus far (and `state`) and returns a list of *new* messages to append. When a parser is passed to the environment, it becomes available as `self.parser`. Passing the same parser to the rubric makes it available to reward functions by name. For tool environments, `env_response` typically executes tool calls and returns results. For games or other custom protocols, this might involve parsing structured output (as above) and returning state updates or feedback.
+`env_response` receives the full conversation history thus far (and `state`) and
+returns a list of _new_ messages to append. For tool environments,
+`env_response` typically executes tool calls and returns results. For games or
+other custom protocols, this might involve extracting structured output and
+returning state updates or feedback.
 
 Several other methods can optionally be overridden for more control in complex custom environments:
 
@@ -564,13 +573,13 @@ class MyGameEnv(vf.MultiTurnEnv):
     @vf.stop
     async def game_won(self, state: vf.State) -> bool:
         return state.get("won", False)
-    
+
     @vf.stop
     async def game_lost(self, state: vf.State) -> bool:
         return state.get("lives", 1) <= 0
 ```
 
-`MultiTurnEnv` includes built-in stop conditions for errors, prompt length limits, `max_turns`, and `max_total_completion_tokens` by default.
+`MultiTurnEnv` includes built-in stop conditions for errors, prompt length limits, `max_turns`, and `max_total_completion_tokens` by default. Per-rollout wall-clock timeouts are configured via the [`--timeout` flag](evaluation#evaluation-options) at evaluation time.
 
 Execution order can be controlled with `priority` (higher runs first). This is useful for checking cheap conditions before expensive ones:
 
@@ -617,10 +626,10 @@ Override `setup_state` to initialize per-rollout state:
 
 ```python
 class MyGameEnv(vf.MultiTurnEnv):
-    async def setup_state(self, state: vf.State) -> vf.State:
+    async def setup_state(self, state: vf.State) -> None:
         state["board"] = initialize_board()
         state["score"] = 0
-        return await super().setup_state(state)
+        await super().setup_state(state)
 ```
 
 ### Cleanup and Teardown
@@ -652,6 +661,7 @@ async def env_response(self, messages: vf.Messages, state: vf.State) -> vf.Messa
         return final_message
     # ... normal response logic
 ```
+
 This bypasses the normal model response loop and immediately terminates the rollout, which is useful when the environment response itself signals completion (e.g. a game is won, an answer is submitted) or is required for reward computation (e.g. final feedback or tool results).
 
 ## Developing Environments
@@ -780,11 +790,13 @@ combined = vf.EnvGroup(
 )
 ```
 
-The group concatenates all sub-environment datasets, tagging each row with a `task` column that routes rollouts to the appropriate environment for generation and scoring. Metrics from all environments are tracked together. 
+The group concatenates all sub-environment datasets and injects
+`info["env_id"]` as internal routing metadata. It is not a top-level input,
+state, or output field. Metrics from all environments are tracked together.
 
 ## Performance
 
-Verifiers runs rollouts concurrently on a single `asyncio` event loop. Any synchronous operation in environment code blocks **all** concurrent rollouts for its duration. At scale this adds up quickly — a 10ms sync call in at 2,000 concurrent rollouts serializes into 20 seconds of wall-clock blocking where no other rollout can make progress. The most impactful optimization is eliminating sync operations on the hot path rollout execution code, i.e. any method that runs *for each rollout* (e.g. `setup_state`, `env_response`, or reward functions).
+Verifiers runs rollouts concurrently on a single `asyncio` event loop. Any synchronous operation in environment code blocks **all** concurrent rollouts for its duration. At scale this adds up quickly — a 10ms sync call in at 2,000 concurrent rollouts serializes into 20 seconds of wall-clock blocking where no other rollout can make progress. The most impactful optimization is eliminating sync operations on the hot path rollout execution code, i.e. any method that runs _for each rollout_ (e.g. `setup_state`, `env_response`, or reward functions).
 
 ### Avoiding Sync Operations
 
@@ -880,16 +892,25 @@ Supported third-party environment integrations include:
 - **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 - **`OpenEnvEnv`** — wraps OpenEnv gym and MCP contracts using Prime Sandboxes with prebuilt images referenced from `.build.json`
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). For OpenEnv environments, build the bundled project image with `prime env build <env-id>` before evaluation or training.
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv). OpenEnvEnv uses the base Verifiers install; the bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
 
 Newer and more experimental environment classes include:
 
 - **`GymEnv`** — universal runner for Gym-compatible environments (OpenAI Gym / Gymnasium API)
-- **`CliAgentEnv`** — runs custom agent code inside sandboxes, intercepting API requests. Accepts sandbox configuration parameters including `docker_image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `gpu_type`, `timeout_minutes`, `environment_vars`, and `labels` for sandbox categorization. Also accepts retry tuning (like `max_retries`) and connection pooling (like `sandbox_client_max_workers`) parameters via `SandboxMixin`. Subclasses can override `get_sandbox_resources(state)` for per-instance resource allocation and `build_env_vars(state)` for custom environment variables (`PROTECTED_ENV_VARS` cannot be overridden). VMs are auto-enabled when `gpu_count > 0`
-- **`ComposableEnv`** — `CliAgentEnv` subclass that separates *what to solve* (`TaskSet`) from *how to solve it* (`Harness`). Wire a task collection and an agent config together with zero subclassing. Delegates sandbox spec, instruction, setup, and env vars to the `TaskSet`; install script, run command, and system prompt to the `Harness`. Supports `install_env` for install-only environment variables, task directory upload via `TaskSet.get_upload_dirs()` joined with `Harness.upload_dir_mapping`, and harness-declared metrics collection via `Harness.metrics_path`. Scoring is owned by per-taskset rubrics
-  - **`TaskSet`** / **`SandboxTaskSet`** — define task collections. `SandboxTaskSet` adds `SandboxSpec` (image, CPU, memory, GPU, timeout) per instance, a `setup(state)` hook, and `validate_instance(state)` for gold-patch validation. Key methods: `get_instruction(info)`, `get_rubric()`, `get_sandbox_spec(info)`, `get_env_vars()`, `get_upload_dirs()`. Includes `validate(n, concurrency)` for bulk validation and `filter()`/`take()` combinators
-  - **`Harness`** — agent-side config dataclass: `install_script`, `install_timeout`, `run_command`, `system_prompt`, `system_prompt_path`, `instruction_path`, `log_path`, `upload_dir_mapping`, `metrics_path`, `metrics_prefix`, `metrics_key`, `metrics_keys`
-  - **`SandboxSpec`** — per-instance sandbox requirements: `image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `gpu_type`, `timeout_minutes`
+- **`CliAgentEnv`** — runs agent code inside remote sandboxes, intercepting API requests through the `MultiTurnEnv` rollout loop. Accepts sandbox configuration parameters including `docker_image`, `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`, `gpu_type`, `timeout_minutes`, `environment_vars`, and `labels` for sandbox categorization. Also accepts retry tuning (like `max_retries`) and connection pooling (like `sandbox_client_max_workers`) parameters via `SandboxMixin`. Subclasses can override `get_sandbox_resources(state)` for per-instance resource allocation and `build_env_vars(state)` for custom environment variables (`PROTECTED_ENV_VARS` cannot be overridden). VMs are auto-enabled when `gpu_count > 0`
+  - **`SandboxTimeouts`** — frozen dataclass of per-operation HTTP timeouts (seconds) applied to sandbox client calls, exported from `verifiers.envs.experimental.sandbox_mixin`. Fields (with defaults that preserve prior behavior): `read_file=10.0`, `extract=60.0`, `poll=60.0`, `mkdir=10.0`. These are request-level (httpx) timeouts, distinct from `SandboxSpec.timeout_minutes` (container lifetime) and the per-rollout wall-clock cap configured via the `--timeout` CLI flag. Override via the `timeouts` kwarg on `CliAgentEnv.__init__` (which flows through `SandboxMixin.init_sandbox_client`) when the sandbox gateway is slow or geographically distant:
+
+    ```python
+    from verifiers.envs.experimental.sandbox_mixin import SandboxTimeouts
+
+    env = MyCliAgentEnv(
+        dataset=dataset,
+        rubric=rubric,
+        timeouts=SandboxTimeouts(read_file=30.0, extract=180.0, poll=120.0),
+    )
+    ```
+- **`vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval rows, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
+- **`SWEDebugEnv`** — no-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs `taskset.setup(state)`, performs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs the task tests and scorer. It records setup, sandbox creation, gold patch, debug command, and test timings in state for validation and timing investigations.
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
 - **`RLMEnv`** — implements [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) for unbounded context processing via REPL-based decomposition and recursive sub-LLM calls
 - **`OpenCodeEnv`** — runs [OpenCode](https://opencode.ai) CLI agents inside sandboxes with API call interception

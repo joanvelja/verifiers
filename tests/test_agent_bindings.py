@@ -41,6 +41,9 @@ _je = jinja2.sandbox.SandboxedEnvironment(undefined=jinja2.StrictUndefined)
 def _stub_rubric(members: list[str]) -> MagicMock:
     rubric = MagicMock()
     rubric.members = members
+    rubric.score_rollout = AsyncMock(return_value=None)
+    rubric.dummy_score_rollout = AsyncMock(return_value=None)
+    rubric.cleanup = AsyncMock(return_value=None)
     rubric.teardown = AsyncMock(return_value=None)
     return rubric
 
@@ -290,3 +293,31 @@ def test_debate_probe_seeds_learner_seat():
 
     # If the probe didn't seed learner_seat, this would fail with KeyError.
     _build(bindings_fn=bindings_fn)
+
+
+@pytest.mark.asyncio
+async def test_rollout_records_generation_timing_and_runs_cleanup(mock_client):
+    """MultiAgentEnv owns the rollout loop, so it must preserve the same
+    timing/cleanup lifecycle that the base Environment output path expects.
+    """
+    env = _build()
+    cleanup = AsyncMock()
+    env.cleanup = cleanup
+
+    output = await env.run_rollout(
+        {
+            "prompt": [{"role": "user", "content": "Which option is correct?"}],
+            "answer": "A",
+            "example_id": "timing-cleanup",
+            "info": {"learner_seat": "debater_a"},
+        },
+        mock_client,
+        "test-model",
+        {},
+    )
+
+    cleanup.assert_awaited_once()
+    timing = output["timing"]
+    assert timing["generation"]["start"] > 0.0
+    assert timing["generation"]["end"] >= timing["generation"]["start"]
+    assert 0.0 <= timing["total"] < 60.0

@@ -22,10 +22,7 @@ env_args
     seed               int    choice-shuffling seed      0
 """
 
-from __future__ import annotations
-
 import random
-from typing import Any
 
 from datasets import Dataset, load_dataset
 
@@ -61,7 +58,7 @@ def _format_row(row: dict, rng: random.Random) -> dict:
         ],
         "answer": truth_letter,
         "example_id": str(row.get("Record ID") or f"gpqa_{rng.random():.10f}"),
-        "task": "gpqa_rlvr",
+        "info": {"env_id": "gpqa_rlvr"},
     }
 
 
@@ -100,7 +97,7 @@ def load_environment(
     num_train_examples: int = -1,
     num_eval_examples: int = -1,
     seed: int = 0,
-    **extra: Any,
+    **extra: object,
 ) -> vf.Environment:
     """vf-eval entry point."""
 

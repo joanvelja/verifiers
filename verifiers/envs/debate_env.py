@@ -12,8 +12,6 @@ conditions, kernel threading, lineage cache, trajectory step append) is
 inherited from :class:`MultiAgentEnv`.
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any, Callable
 
@@ -85,11 +83,18 @@ class DebateEnv(MultiAgentEnv):
         # Silent drift desyncs round_index (env) from per-member reward
         # attribution (rubric) and yields plausible-but-wrong training
         # signal. Rubric contract (MultiAgentRubric) guarantees the attr.
-        if list(self.rubric.members) != list(members):
+        rubric_members = getattr(self.rubric, "members", None)
+        if rubric_members is None:
+            raise TypeError(
+                "DebateEnv requires a rubric with a members attribute so rewards "
+                "can be attributed per member"
+            )
+        rubric_members = list(rubric_members)
+        if rubric_members != list(members):
             raise ValueError(
                 f"DebateEnv.members != rubric.members\n"
                 f"  env    : {list(members)}\n"
-                f"  rubric : {list(self.rubric.members)}\n"
+                f"  rubric : {rubric_members}\n"
                 f"Both must be identical (same ids, same order) -- "
                 f"round_index and reward attribution key off them."
             )
@@ -241,7 +246,7 @@ class DebateEnv(MultiAgentEnv):
         """Render one opponent utterance as a user message for ``viewer_id``.
 
         Selects raw vs. public channel per visibility_policy and wraps with
-        speaker attribution. Shared by ``build_prompt`` and ``_format_history``.
+        speaker attribution.
 
         Quarantined utterances (``parse_error`` set, including empty-public
         commits from reasoning-mode budget exhaustion) render as a single
@@ -407,23 +412,6 @@ class DebateEnv(MultiAgentEnv):
         prefill = self.prompts.render_prefill(member_id, slot.phase, ctx_current)
         if prefill:
             msgs.append(AssistantMessage(content=prefill))
-        return msgs
-
-    def _format_history(
-        self, kernel_state: KernelState, viewer_id: str
-    ) -> list[Message]:
-        """Format transcript entries for ``viewer_id``.
-
-        Own utterances → assistant role, ``raw_content`` verbatim (KV cache
-        coherence). Others → user role, content selected by
-        :meth:`visibility_policy` and wrapped with speaker attribution.
-        """
-        msgs: list[Message] = []
-        for utt in kernel_state.transcript:
-            if utt.member_id == viewer_id:
-                msgs.append(AssistantMessage(content=utt.raw_content))
-            else:
-                msgs.append(self._render_opponent_message(utt, viewer_id))
         return msgs
 
     # -- field extraction ----------------------------------------------------

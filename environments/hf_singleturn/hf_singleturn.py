@@ -1,10 +1,9 @@
-from __future__ import annotations
+from typing import Sequence
 
-from typing import Any, Sequence
-
-from datasets import Dataset
+from datasets import Dataset, IterableDataset
 
 import verifiers as vf
+from verifiers.types import SamplingArgs
 from verifiers.utils.hf_tasks import (
     AnswerFormat,
     DEFAULT_JUDGE_PROMPT_PACK,
@@ -46,11 +45,11 @@ def load_environment(
     seed: int = 0,
     num_train_examples: int = -1,
     num_eval_examples: int = -1,
-    judge_client: Any | None = None,
+    judge_client: vf.Client | None = None,
     judge_model: str | None = None,
     judge_base_url: str | None = None,
     judge_api_key_var: str = "OPENAI_API_KEY",
-    judge_sampling_args: dict[str, Any] | None = None,
+    judge_sampling_args: SamplingArgs | None = None,
     judge_prompt_pack: str | None = DEFAULT_JUDGE_PROMPT_PACK,
     judge_prompt_kind: JudgePromptKind = "grader",
     judge_system_prompt: str | None = None,
@@ -74,7 +73,7 @@ def load_environment(
     judge_correctness_prior: float | None = None,
     judge_sensitivity: float | None = None,
     judge_false_positive_rate: float | None = None,
-    **extra: Any,
+    **extra: object,
 ) -> vf.Environment:
     resolved_dataset = dataset
     if resolved_dataset is None and dataset_name is None:
@@ -229,7 +228,7 @@ def _load_required_dataset(
     streaming_limit: int,
     streaming_shuffle_buffer_size: int | None,
     streaming_seed: int,
-) -> Dataset:
+) -> Dataset | IterableDataset:
     if dataset_name is None:
         raise ValueError("dataset_name is required when dataset is not provided")
     return load_hf_dataset(

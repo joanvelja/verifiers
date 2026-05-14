@@ -9,8 +9,6 @@ Covers:
 - make_dataset tool call sanitization
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 from unittest.mock import AsyncMock
@@ -20,6 +18,7 @@ from datasets import Dataset
 
 import verifiers as vf
 from verifiers.envs.environment import Environment
+from verifiers.envs.request_context import ModelRequestContext
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
@@ -35,12 +34,13 @@ from verifiers.types import (
 from verifiers.utils.message_utils import sanitize_tool_calls
 from verifiers.utils.save_utils import make_dataset as build_dataset
 from verifiers.utils.save_utils import state_to_output
+from verifiers.utils.usage_utils import StateUsageTracker
 
 
 # Local simple concrete Environment for testing
 class DummyEnvironment(Environment):
     async def setup_state(self, state):
-        return state
+        pass
 
     async def rollout(
         self,
@@ -52,7 +52,7 @@ class DummyEnvironment(Environment):
         state = await self.init_state(
             input, client=client, model=model, sampling_args=sampling_args
         )
-        state = await self.setup_state(state)
+        await self.setup_state(state)
 
         prompt_messages = state["prompt"]
         response = await self.get_model_response(state=state, prompt=prompt_messages)
@@ -200,6 +200,54 @@ async def test_get_model_response_tracks_usage_on_state(
 
 
 @pytest.mark.asyncio
+async def test_get_model_response_uses_request_context_lineage_and_tracker(
+    mock_client, make_dummy_env, make_input
+):
+    env = make_dummy_env(mock_client)
+    prompt: vf.Messages = [{"role": "user", "content": "Track lineage"}]
+    state = await env.init_state(
+        input=make_input(prompt=prompt),
+        client=mock_client,
+        model="test-model",
+    )
+    response = Response(
+        id="1",
+        created=0,
+        model="test-model",
+        usage=Usage(
+            prompt_tokens=5,
+            reasoning_tokens=0,
+            completion_tokens=4,
+            total_tokens=9,
+        ),
+        message=ResponseMessage(
+            content="ok",
+            reasoning_content=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=None,
+            tool_calls=None,
+        ),
+    )
+    mock_client.get_response = AsyncMock(return_value=response)
+    child_tracker = StateUsageTracker()
+
+    await env.get_model_response(
+        state=state,
+        prompt=prompt,
+        request_context=ModelRequestContext(
+            lineage_key="agent_a",
+            usage_tracker=child_tracker,
+        ),
+    )
+
+    assert mock_client.get_response.call_args.kwargs["lineage_key"] == "agent_a"
+    assert child_tracker.snapshot() == {"input_tokens": 5.0, "output_tokens": 4.0}
+    parent_usage = env.get_state_usage(state)
+    assert parent_usage in (None, {"input_tokens": 0.0, "output_tokens": 0.0})
+
+
+@pytest.mark.asyncio
 async def test_state_to_output_uses_state_usage_not_trajectory(
     mock_client, make_dummy_env, make_input
 ):
@@ -237,7 +285,9 @@ async def test_state_to_output_uses_state_usage_not_trajectory(
     state["reward"] = 0.0
 
     output = state_to_output(state, state_columns=[])
-    assert output["token_usage"] == {"input_tokens": 5.0, "output_tokens": 4.0}
+    usage = output["token_usage"]
+    assert usage["input_tokens"] == 5.0
+    assert usage["output_tokens"] == 4.0
 
 
 def test_state_to_output_persists_judge_response_without_state_columns():
@@ -361,7 +411,6 @@ async def test_generate_grouped_scoring_distributes_per_group(
             return [
                 {
                     "example_id": input_item["example_id"],
-                    "task": "dummy",
                     "prompt": "p",
                     "completion": "c",
                     "answer": "a",
@@ -456,7 +505,6 @@ async def test_run_group_server_mode_resolves_endpoint_config(
             return [
                 {
                     "example_id": input_item["example_id"],
-                    "task": "dummy",
                     "prompt": "p",
                     "completion": "c",
                     "answer": "a",

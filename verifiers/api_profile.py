@@ -14,8 +14,6 @@ back in to vLLM extras. A one-shot logger.warning on the first stripped
 key surfaces silent-degradation misconfigurations.
 """
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from enum import Enum
 from typing import Any
@@ -29,7 +27,8 @@ class ApiProfile(str, Enum):
 
     VLLM_PERMISSIVE = "vllm_permissive"
     """vLLM's OpenAI-compatible server: accepts top_k, min_p, cache_salt,
-    return_token_ids, repetition_penalty, min_tokens, best_of via extra_body."""
+    return_token_ids, repetition_penalty, min_tokens, best_of, and guided
+    decoding keys via extra_body."""
 
     ANTHROPIC = "anthropic"
     """Anthropic messages API (kwargs normalized by AnthropicMessagesClient)."""
@@ -47,6 +46,11 @@ VLLM_ONLY_EXTRA_BODY_KEYS: frozenset[str] = frozenset(
         "repetition_penalty",
         "min_tokens",
         "best_of",
+        "guided_json",
+        "guided_regex",
+        "guided_choice",
+        "guided_grammar",
+        "structural_tag",
     }
 )
 
@@ -73,7 +77,9 @@ def filter_sampling_args_for_profile(
                 stripped.add(k)
         extra = out.get("extra_body")
         if isinstance(extra, Mapping):
-            kept = {k: v for k, v in extra.items() if k not in VLLM_ONLY_EXTRA_BODY_KEYS}
+            kept = {
+                k: v for k, v in extra.items() if k not in VLLM_ONLY_EXTRA_BODY_KEYS
+            }
             dropped = set(extra.keys()) - set(kept.keys())
             if dropped:
                 stripped.update(dropped)

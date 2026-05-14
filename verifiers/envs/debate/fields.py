@@ -1,15 +1,13 @@
 """Field-level scoring: mode types, classifiers, normalizers, and field resolution."""
 
-from __future__ import annotations
-
 import contextlib
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Required, TypedDict
+from typing import Any, TypedDict
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
+from typing_extensions import Required
 
 
 # ---------------------------------------------------------------------------
@@ -21,7 +19,7 @@ if TYPE_CHECKING:
 class FieldSpec:
     type: type
     description: str = ""
-    scoring: ScoringMode | None = None
+    scoring: "ScoringMode | None" = None
     normalizer: Callable[[Any], Any] | None = None
 
 
@@ -401,13 +399,13 @@ _TYPE_MAP: dict[str, type] = {
 }
 
 
-class _FieldDesc(TypedDict, total=False):
+class FieldDesc(TypedDict, total=False):
     type: Required[str]
     description: str
     scoring: str | dict[str, Any]
 
 
-def _resolve_fields(raw: dict[str, str | _FieldDesc]) -> dict[str, FieldSpec]:
+def _resolve_fields(raw: dict[str, str | FieldDesc]) -> dict[str, FieldSpec]:
     """Resolve YAML field declarations to FieldSpec objects."""
     result: dict[str, FieldSpec] = {}
     for name, spec in raw.items():

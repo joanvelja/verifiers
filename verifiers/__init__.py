@@ -1,4 +1,4 @@
-__version__ = "0.1.12"
+__version__ = "0.1.15.dev5"
 
 import importlib
 import os
@@ -8,12 +8,17 @@ from typing import TYPE_CHECKING
 from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
 from .decorators import (  # noqa # isort: skip
+    advantage,
     cleanup,
+    metric,
+    reward,
+    setup,
     stop,
     teardown,
+    update,
 )
 from .multi_agent_bridge import rollout_to_member_rollouts  # noqa # isort: skip
-from .types import DatasetBuilder  # noqa # isort: skip
+from .types import DatasetBuilder, State  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 
@@ -40,6 +45,14 @@ setup_logging(os.getenv("VF_LOG_LEVEL"))
 
 __all__ = [
     "DatasetBuilder",
+    "State",
+    "Config",
+    "ConfigData",
+    "ConfigMap",
+    "GroupHandler",
+    "Handler",
+    "MutableConfigMap",
+    "Objects",
     "Parser",
     "ThinkParser",
     "MaybeThinkParser",
@@ -56,6 +69,32 @@ __all__ = [
     "MCPEnv",
     "BrowserEnv",
     "OpenEnvEnv",
+    "Env",
+    "EnvConfig",
+    "Task",
+    "TaskRow",
+    "TaskRows",
+    "Taskset",
+    "TasksetConfig",
+    "Harness",
+    "HarnessConfig",
+    "ProgramConfig",
+    "MCPTool",
+    "MCPToolConfig",
+    "SandboxConfig",
+    "Toolset",
+    "ToolsetConfig",
+    "User",
+    "UserConfig",
+    "HarborTaskset",
+    "HarborTasksetConfig",
+    "MiniSWEAgent",
+    "OpenCode",
+    "OpenCodeConfig",
+    "Pi",
+    "RLM",
+    "RLMConfig",
+    "Terminus2",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -67,8 +106,9 @@ __all__ = [
     "Client",
     "AnthropicMessagesClient",
     "OpenAIChatCompletionsClient",
-    "OpenAIChatCompletionsTokenClient",
     "OpenAICompletionsClient",
+    "OpenAIResponsesClient",
+    "RendererClient",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",
@@ -77,10 +117,23 @@ __all__ = [
     "quiet_verifiers",
     "load_environment",
     "print_prompt_completions_sample",
+    "get_messages",
     "rollout_to_member_rollouts",
     "cleanup",
+    "metric",
+    "reward",
+    "advantage",
+    "setup",
     "stop",
     "teardown",
+    "update",
+    "add_metric",
+    "add_reward",
+    "add_advantage",
+    "build_signals",
+    "collect_signals",
+    "score_group",
+    "score_rollout",
     "ensure_keys",
     "MissingKeyError",
     "get_model",
@@ -101,11 +154,12 @@ _LAZY_IMPORTS = {
     "OpenAIChatCompletionsClient": (
         "verifiers.clients.openai_chat_completions_client:OpenAIChatCompletionsClient"
     ),
-    "OpenAIChatCompletionsTokenClient": (
-        "verifiers.clients.openai_chat_completions_token_client:OpenAIChatCompletionsTokenClient"
-    ),
+    "RendererClient": ("verifiers.clients.renderer_client:RendererClient"),
     "OpenAICompletionsClient": (
         "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
+    ),
+    "OpenAIResponsesClient": (
+        "verifiers.clients.openai_responses_client:OpenAIResponsesClient"
     ),
     "Environment": "verifiers.envs.environment:Environment",
     "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
@@ -134,6 +188,47 @@ _LAZY_IMPORTS = {
     "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
     "BrowserEnv": "verifiers.envs.integrations.browser_env:BrowserEnv",
     "OpenEnvEnv": "verifiers.envs.integrations.openenv_env:OpenEnvEnv",
+    "Config": "verifiers.v1:Config",
+    "Env": "verifiers.v1:Env",
+    "EnvConfig": "verifiers.v1:EnvConfig",
+    "ConfigData": "verifiers.v1:ConfigData",
+    "ConfigMap": "verifiers.v1:ConfigMap",
+    "GroupHandler": "verifiers.v1:GroupHandler",
+    "Handler": "verifiers.v1:Handler",
+    "MutableConfigMap": "verifiers.v1:MutableConfigMap",
+    "Objects": "verifiers.v1:Objects",
+    "Task": "verifiers.v1:Task",
+    "TaskRow": "verifiers.v1:TaskRow",
+    "TaskRows": "verifiers.v1:TaskRows",
+    "Taskset": "verifiers.v1:Taskset",
+    "TasksetConfig": "verifiers.v1:TasksetConfig",
+    "Harness": "verifiers.v1:Harness",
+    "HarnessConfig": "verifiers.v1:HarnessConfig",
+    "ProgramConfig": "verifiers.v1:ProgramConfig",
+    "MCPTool": "verifiers.v1:MCPTool",
+    "MCPToolConfig": "verifiers.v1:MCPToolConfig",
+    "SandboxConfig": "verifiers.v1:SandboxConfig",
+    "Toolset": "verifiers.v1:Toolset",
+    "ToolsetConfig": "verifiers.v1:ToolsetConfig",
+    "User": "verifiers.v1:User",
+    "UserConfig": "verifiers.v1:UserConfig",
+    "HarborTaskset": "verifiers.v1:HarborTaskset",
+    "HarborTasksetConfig": "verifiers.v1:HarborTasksetConfig",
+    "MiniSWEAgent": "verifiers.v1:MiniSWEAgent",
+    "OpenCode": "verifiers.v1:OpenCode",
+    "OpenCodeConfig": "verifiers.v1:OpenCodeConfig",
+    "Pi": "verifiers.v1:Pi",
+    "RLM": "verifiers.v1:RLM",
+    "RLMConfig": "verifiers.v1:RLMConfig",
+    "Terminus2": "verifiers.v1:Terminus2",
+    "get_messages": "verifiers.v1:get_messages",
+    "add_metric": "verifiers.v1:add_metric",
+    "add_reward": "verifiers.v1:add_reward",
+    "add_advantage": "verifiers.v1:add_advantage",
+    "build_signals": "verifiers.v1:build_signals",
+    "collect_signals": "verifiers.v1:collect_signals",
+    "score_group": "verifiers.v1:score_group",
+    "score_rollout": "verifiers.v1:score_rollout",
 }
 
 
@@ -158,6 +253,10 @@ def __getattr__(name: str):
             raise AttributeError(
                 f"To use verifiers.{name}, install as `verifiers-rl`."
             ) from e
+        if name == "RendererClient":
+            raise AttributeError(
+                "To use verifiers.RendererClient, install as `verifiers[renderers]`."
+            ) from e
         raise AttributeError(
             f"To use verifiers.{name}, install as `verifiers[all]`. "
         ) from e
@@ -171,10 +270,9 @@ if TYPE_CHECKING:
     from .clients.openai_chat_completions_client import (  # noqa: F401
         OpenAIChatCompletionsClient,
     )
-    from .clients.openai_chat_completions_token_client import (  # noqa: F401
-        OpenAIChatCompletionsTokenClient,
-    )
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
+    from .clients.openai_responses_client import OpenAIResponsesClient  # noqa: F401
+    from .clients.renderer_client import RendererClient  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
     from .envs.environment import Environment  # noqa: F401
     from .envs.experimental.cli_agent_env import CliAgentEnv  # noqa: F401
@@ -194,6 +292,49 @@ if TYPE_CHECKING:
     from .rubrics.judge_rubric import JudgeRubric  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
     from .utils.env_utils import load_environment  # noqa: F401
+    from .v1 import (  # noqa: F401
+        Config,
+        ConfigData,
+        ConfigMap,
+        Env,
+        EnvConfig,
+        GroupHandler,
+        Handler,
+        Harness,
+        HarnessConfig,
+        HarborTaskset,
+        HarborTasksetConfig,
+        MCPTool,
+        MCPToolConfig,
+        MiniSWEAgent,
+        MutableConfigMap,
+        Objects,
+        OpenCode,
+        OpenCodeConfig,
+        Pi,
+        ProgramConfig,
+        RLM,
+        RLMConfig,
+        Terminus2,
+        SandboxConfig,
+        Task,
+        TaskRow,
+        TaskRows,
+        Taskset,
+        TasksetConfig,
+        Toolset,
+        ToolsetConfig,
+        User,
+        UserConfig,
+        add_advantage,
+        add_metric,
+        add_reward,
+        build_signals,
+        collect_signals,
+        get_messages,
+        score_group,
+        score_rollout,
+    )
 
     # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
     RLConfig: Any

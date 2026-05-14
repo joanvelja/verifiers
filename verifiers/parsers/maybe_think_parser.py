@@ -4,9 +4,9 @@ from verifiers.parsers.parser import Parser
 
 
 class MaybeThinkParser(Parser):
-    def __init__(self, extract_fn: Callable[[str], str] = lambda x: x):
+    def __init__(self, extract_fn: Callable[[str], str | None] = lambda x: x):
         super().__init__(extract_fn=extract_fn)
 
-    def parse(self, text: str) -> str:
+    def parse(self, text: str) -> str | None:
         text = text.split("</think>")[-1].strip()
         return self.extract_fn(text)
