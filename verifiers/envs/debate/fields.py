@@ -5,7 +5,9 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Required, TypedDict
+from typing import Any, TypedDict
+
+from typing_extensions import Required
 
 
 # ---------------------------------------------------------------------------
