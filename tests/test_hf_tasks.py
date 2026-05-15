@@ -14,6 +14,7 @@ from environments.hf_debate.hf_debate import load_environment as load_hf_debate
 from environments.hf_singleturn.hf_singleturn import (
     load_environment as load_hf_singleturn,
 )
+from verifiers.envs.multi_agent_kernel import KernelState
 from verifiers.utils.hf_tasks import (
     MultipleChoiceRubric,
     extract_final_answer,
@@ -425,6 +426,22 @@ _matcher:
     assert rubric.judge_panel.repeated_call_correlation == 0.95
 
 
+def test_hf_singleturn_accepts_bare_debate_prompt_ref_for_open_ended() -> None:
+    raw = Dataset.from_list([{"question": "What is 2 + 2?", "answer": "4"}])
+
+    env = load_hf_singleturn(
+        dataset=raw,
+        task_type="open_ended",
+        prompts_ref="selfplay",
+    )
+
+    prompt = env.get_dataset()[0]["prompt"][1]["content"]
+    assert "Choose the answer you believe is correct." in prompt
+    rubric = env.rubric.rubrics[0]
+    assert rubric.judge_positive_label == "CORRECT"
+    assert rubric.judge_negative_label == "INCORRECT"
+
+
 def test_hf_singleturn_threads_persistent_judge_cache_args(tmp_path) -> None:
     raw = Dataset.from_list([{"question": "What is the threshold?", "answer": "x"}])
     cache_path = tmp_path / "judge.sqlite3"
@@ -718,3 +735,46 @@ def test_hf_debate_uses_nano_for_grader_and_matcher(mock_client) -> None:
     )
     assert env.rubric.matcher.judge_system_prompt is not None
     assert env.rubric.matcher.judge_system_prompt.startswith("Compare two answers")
+
+
+def test_hf_debate_matcher_accepts_prompt_pack_verdict_labels(mock_client) -> None:
+    mock_client.set_default_response("SAME")
+    raw = Dataset.from_list([{"question": "What is 2 + 2?", "answer": "4"}])
+
+    env = load_hf_debate(
+        dataset=raw,
+        task_type="open_ended",
+        prompts_ref="default",
+        judge_client=mock_client,
+    )
+
+    state = vf.State(
+        prompt=[{"role": "user", "content": "What is 2 + 2?"}],
+        completion=[],
+        answer="4",
+        task="open",
+        timing={"start_time": 0.0, "scoring_ms": 0.0, "total_ms": 0.0},
+    )
+
+    verdict = asyncio.run(
+        env.rubric.verdict("4", "4", "What is 2 + 2?", None, "matcher", state)
+    )
+
+    assert verdict is True
+
+
+def test_hf_debate_default_schedule_has_simultaneous_debater_slots() -> None:
+    env = load_hf_debate()
+
+    assert env.schedule.current_slot(KernelState(slot_index=0)).agents == (
+        "debater_a",
+        "debater_b",
+    )
+    assert env.schedule.current_slot(KernelState(slot_index=0)).phase == "propose"
+    assert env.schedule.current_slot(KernelState(slot_index=1)).agents == (
+        "debater_a",
+        "debater_b",
+    )
+    assert env.schedule.current_slot(KernelState(slot_index=1)).phase == "critique"
+    assert env.schedule.current_slot(KernelState(slot_index=2)).agents == ("judge",)
+    assert env.schedule.current_slot(KernelState(slot_index=2)).phase == "final"

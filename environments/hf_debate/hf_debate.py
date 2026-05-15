@@ -15,11 +15,9 @@ from verifiers.utils.hf_tasks import (
 )
 
 DEFAULT_SCHEDULE: list[vf.ConfigData] = [
-    {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
-    {"slot_id": 1, "agents": ["debater_b"], "phase": "propose"},
-    {"slot_id": 2, "agents": ["debater_a"], "phase": "critique"},
-    {"slot_id": 3, "agents": ["debater_b"], "phase": "critique"},
-    {"slot_id": 4, "agents": ["judge"], "phase": "final"},
+    {"slot_id": 0, "agents": ["debater_a", "debater_b"], "phase": "propose"},
+    {"slot_id": 1, "agents": ["debater_a", "debater_b"], "phase": "critique"},
+    {"slot_id": 2, "agents": ["judge"], "phase": "final"},
 ]
 
 

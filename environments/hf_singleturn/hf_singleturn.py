@@ -82,11 +82,13 @@ def load_environment(
             choices_key = "choices"
             answer_format = "index"
 
-    resolved_judge_prompt_pack = (
-        prompts_ref
-        if judge_prompt_pack == DEFAULT_JUDGE_PROMPT_PACK and prompts_ref is not None
-        else judge_prompt_pack
-    )
+    resolved_judge_prompt_pack = judge_prompt_pack
+    if judge_prompt_pack == DEFAULT_JUDGE_PROMPT_PACK and prompts_ref is not None:
+        resolved_judge_prompt_pack = (
+            judge_prompt_pack
+            if "/" not in prompts_ref and "." not in prompts_ref
+            else prompts_ref
+        )
 
     rubric = make_rubric(
         task_type=task_type,

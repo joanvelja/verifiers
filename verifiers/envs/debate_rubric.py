@@ -144,6 +144,8 @@ def maybe_judge(
         judge_system_prompt=tmpl.system,
         judge_prompt=tmpl.user,
         judge_sampling_args=JUDGE_SAMPLING_ARGS,
+        judge_positive_label=tmpl.positive,
+        judge_negative_label=tmpl.negative,
     )
 
 
