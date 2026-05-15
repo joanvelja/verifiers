@@ -17,8 +17,6 @@ from verifiers.clients import Client
 from verifiers.envs.debate.fields import EnumScoring, FieldSpec, classify_enum
 from verifiers.envs.debate.prompts import (
     DebatePrompts,
-    JudgeTemplate,
-    _normalize_verdict_token,
 )
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.judge_rubric import JudgeRubric
@@ -31,6 +29,7 @@ from verifiers.types import (
     TrajectoryStep,
     UserMessage,
 )
+from verifiers.utils.judge_prompts import JudgeTemplate, normalize_verdict_token
 
 JUDGE_SAMPLING_ARGS = {
     "temperature": 0.0,
@@ -142,8 +141,11 @@ def maybe_judge(
         parser=Parser(),
         judge_client=client,
         judge_model=model,
+        judge_system_prompt=tmpl.system,
         judge_prompt=tmpl.user,
         judge_sampling_args=JUDGE_SAMPLING_ARGS,
+        judge_positive_label=tmpl.positive,
+        judge_negative_label=tmpl.negative,
     )
 
 
@@ -152,7 +154,7 @@ def resolve_verdict(
 ) -> bool:
     """Exact-token verdict match. Substring matching ('correct' in
     'incorrect') silently inverts labels — fail loud instead."""
-    token = _normalize_verdict_token(verdict)
+    token = normalize_verdict_token(verdict)
     if token == tmpl.positive:
         return True
     if token == tmpl.negative:

@@ -4,8 +4,7 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, cast
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession, StdioServerParameters, stdio_client
 from mcp.types import TextContent, Tool as MCPTool
 
 import verifiers as vf

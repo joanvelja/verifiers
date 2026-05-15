@@ -211,7 +211,7 @@ def enum_normalizer(values: tuple[str, ...]) -> Callable[[Any], Any]:
         if c.is_valid:
             return c.canonical
         if is_mcq:
-            from .mcq import normalize_mcq
+            from verifiers.utils.mcq import normalize_mcq
 
             extracted = normalize_mcq(str(value))
             if extracted is not None:

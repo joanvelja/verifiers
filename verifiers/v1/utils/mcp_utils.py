@@ -57,8 +57,7 @@ class MCPToolSession:
         await task
 
     async def _run(self) -> None:
-        from mcp import ClientSession
-        from mcp.client.stdio import StdioServerParameters, stdio_client
+        from mcp import ClientSession, StdioServerParameters, stdio_client
 
         server = StdioServerParameters(
             command=self.spec.command,
