@@ -280,6 +280,7 @@ class VersionInfo(TypedDict):
 
 class GenerateMetadata(TypedDict):
     env_id: str
+    name: NotRequired[str]
     env_args: dict
     model: str
     base_url: str
@@ -1009,9 +1010,8 @@ class Config(BaseModel):
     ) -> Self: ...
 
 class EnvConfig(Config):
-    args: object | None = None
-    taskset: object | None = None
-    harness: object | None = None
+    taskset: TasksetConfig
+    harness: HarnessConfig
 
 class TasksetConfig(Config):
     taskset_id: str | None = None
@@ -1030,8 +1030,13 @@ class HarnessConfig(Config):
 ```
 
 `EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
-`[env.harness]` sections flow to `config.taskset` and `config.harness`;
-environment-specific named args flow through `[env.args]`.
+`[env.harness]` sections populate `EnvConfig.taskset` and `EnvConfig.harness`.
+Environment-specific fields belong on the taskset or harness config that owns
+them; `EnvConfig` subclasses only bind concrete child config types.
+`taskset` must be typed as a `TasksetConfig` subclass, and `harness` must be
+typed as a `HarnessConfig` subclass.
+Annotation-only `Config` fields on `Config` subclasses default to their config
+class, so nested config objects do not need `Field(default_factory=...)`.
 
 `Config` subclasses accept a positional source config plus direct keyword
 overrides. The source object is positional-only so subclasses can define a real
@@ -1090,6 +1095,7 @@ Leaf endpoint configuration used inside `ClientConfig.endpoint_configs`. Has the
 ```python
 class EvalConfig(BaseModel):
     env_id: str
+    name: str | None = None
     env_args: dict
     env_dir_path: str
     endpoint_id: str | None = None

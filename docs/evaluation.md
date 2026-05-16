@@ -68,7 +68,8 @@ The positional argument accepts two formats:
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported. Modules must be installed (via `prime env install` or `uv pip install`).
 
-The `--env-args` flag passes arguments to your `load_environment()` function:
+For legacy or direct-constructor environments, the `--env-args` flag passes
+arguments to your `load_environment()` function:
 
 ```bash
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
@@ -343,6 +344,7 @@ num_examples = 50
 
 [[eval]]
 id = "gsm8k"
+name = "gsm8k-baseline"
 num_examples = 100  # overrides global default
 rollouts_per_example = 5
 
@@ -370,16 +372,35 @@ optional:
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string | **Required.** Environment module name |
+| `name` | string | Optional eval label for display and saved result paths |
 | `args` | table | Arguments passed to `load_environment()` |
-| `taskset` | table | v1 taskset config passed through `config.taskset` |
-| `harness` | table | v1 harness config passed through `config.harness` |
+| `taskset` | table | v1 taskset config passed through `EnvConfig.taskset` |
+| `harness` | table | v1 harness config passed through `EnvConfig.harness` |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
 
-Example with environment args:
+Use `name` to run the same environment more than once with different args:
+
+```toml
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-short"
+
+[eval.args]
+max_length = 32
+
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-long"
+
+[eval.args]
+max_length = 256
+```
+
+Example with legacy environment args:
 
 ```toml
 [[eval]]

@@ -36,7 +36,6 @@ from verifiers.api_profile import (
     filter_sampling_args_for_profile,
 )
 from verifiers.clients.client import Client
-from verifiers.clients.routed_experts import parse_routed_experts
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -61,6 +60,7 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
+from verifiers.utils.response_utils import parse_routed_experts
 
 
 def handle_openai_overlong_prompt(func):

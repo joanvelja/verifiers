@@ -33,6 +33,7 @@ from verifiers.utils.save_utils import (
     save_new_outputs,
     save_outputs,
     states_to_outputs,
+    truncate_malformed_trailing_line,
     validate_resume_metadata,
 )
 from verifiers.utils.usage_utils import StateUsageTracker, response_usage_tokens
@@ -537,6 +538,9 @@ class TestSaveNewOutputs:
             "\n".join(lines + [malformed_trailing_line]), encoding="utf-8"
         )
 
+        # Caller drops the partial trailing row before appending so the new
+        # row lands on a valid JSONL boundary.
+        truncate_malformed_trailing_line(outputs_path)
         save_new_outputs(
             [{"example_id": 3, "label": "row-3"}],
             results_path,

@@ -973,6 +973,7 @@ class GenerateMetadata(TypedDict):
     """Pydantic model for generation metadata."""
 
     env_id: str
+    name: NotRequired[str]
     env_args: dict
     model: str
     base_url: str
@@ -1232,6 +1233,7 @@ class EvalConfig(BaseModel):
 
     # environment
     env_id: str
+    name: str | None = None
     env_args: dict
     env_dir_path: str
     # evaluation
