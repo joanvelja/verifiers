@@ -100,8 +100,10 @@ def _make_step(
     completion: list[dict[str, str]],
     prompt_ids: list[int],
     completion_ids: list[int],
+    extras: dict[str, Any] | None = None,
+    trajectory_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    step = {
         "prompt": prompt,
         "completion": completion,
         "tokens": {
@@ -109,6 +111,11 @@ def _make_step(
             "completion_ids": completion_ids,
         },
     }
+    if extras is not None:
+        step["extras"] = extras
+    if trajectory_id is not None:
+        step["trajectory_id"] = trajectory_id
+    return step
 
 
 @pytest.mark.asyncio
@@ -176,6 +183,93 @@ async def test_get_prompt_ids_uses_largest_message_prefix_match():
 
 
 @pytest.mark.asyncio
+async def test_get_prompt_ids_filters_by_lineage_key():
+    client = _PromptIdTestClient(full_prompt_ids=[1, 2, 3, 99, 5])
+    prompt_messages = cast(
+        Any,
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "next"},
+        ],
+    )
+    state = cast(
+        State,
+        {
+            "model": "test-model",
+            "trajectory": [
+                _make_step(
+                    prompt=[{"role": "user", "content": "u"}],
+                    completion=[{"role": "assistant", "content": "a"}],
+                    prompt_ids=[7],
+                    completion_ids=[8, 99],
+                    extras={"member_id": "agent_b"},
+                ),
+                _make_step(
+                    prompt=[{"role": "user", "content": "u"}],
+                    completion=[{"role": "assistant", "content": "a"}],
+                    prompt_ids=[1],
+                    completion_ids=[2, 99],
+                    extras={"member_id": "agent_a"},
+                ),
+            ],
+        },
+    )
+
+    prompt_ids = await client.get_prompt_ids(
+        state, prompt_messages, oai_tools=None, lineage_key="agent_a"
+    )
+
+    assert prompt_ids is not None
+    assert prompt_ids[:3] == [1, 2, 99]
+
+
+@pytest.mark.asyncio
+async def test_get_prompt_ids_uses_candidate_indices_without_flat_scan():
+    client = _PromptIdTestClient(full_prompt_ids=[1, 2, 99, 5])
+    prompt_messages = cast(
+        Any,
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "next"},
+        ],
+    )
+    state = cast(
+        State,
+        {
+            "model": "test-model",
+            "trajectory": [
+                _make_step(
+                    prompt=[{"role": "user", "content": "u"}],
+                    completion=[{"role": "assistant", "content": "a"}],
+                    prompt_ids=[1],
+                    completion_ids=[2, 99],
+                    extras={"member_id": "agent_a"},
+                ),
+                _make_step(
+                    prompt=[{"role": "user", "content": "u"}],
+                    completion=[{"role": "assistant", "content": "a"}],
+                    prompt_ids=[7],
+                    completion_ids=[8, 99],
+                    extras={"member_id": "agent_b"},
+                ),
+            ],
+        },
+    )
+
+    prompt_ids = await client.get_prompt_ids(
+        state,
+        prompt_messages,
+        oai_tools=None,
+        prefix_candidate_indices=(0,),
+    )
+
+    assert prompt_ids is not None
+    assert prompt_ids[:3] == [1, 2, 99]
+
+
+@pytest.mark.asyncio
 async def test_get_prompt_ids_returns_none_when_no_prefix_match():
     client = _NoTokenizeClient()
     state = cast(
@@ -211,7 +305,13 @@ async def test_get_native_response_falls_back_to_super_when_no_prefix_match(
     calls: list[dict[str, Any]] = []
 
     async def fake_get_prompt_ids(  # noqa: ANN001
-        self, state, prompt_messages, oai_tools, chat_template_kwargs=None
+        self,
+        state,
+        prompt_messages,
+        oai_tools,
+        chat_template_kwargs=None,
+        lineage_key=None,
+        prefix_candidate_indices=None,
     ):
         return None
 
@@ -267,6 +367,7 @@ async def test_get_native_response_falls_back_to_super_when_no_prefix_match(
     )
 
     assert response is sentinel
+    assert state["metrics"]["client/openai_chat_completions_token_tito_miss"] == 1.0
     assert len(calls) == 1
     assert calls[0]["prompt"] == prompt
 
@@ -279,7 +380,13 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
     client = OpenAIChatCompletionsTokenClient(recording_client)
 
     async def fake_get_prompt_ids(  # noqa: ANN001
-        self, state, prompt_messages, oai_tools, chat_template_kwargs=None
+        self,
+        state,
+        prompt_messages,
+        oai_tools,
+        chat_template_kwargs=None,
+        lineage_key=None,
+        prefix_candidate_indices=None,
     ):
         return [10, 20]
 
@@ -312,6 +419,7 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
     )
 
     assert response["ok"] is True
+    assert state["metrics"]["client/openai_chat_completions_token_tito_hit"] == 1.0
     assert len(recording_client.calls) == 1
     assert recording_client.calls[0]["path"] == "/chat/completions/tokens"
     assert recording_client.calls[0]["body"]["tokens"] == [10, 20]

@@ -6,10 +6,9 @@ readme = "README.md"
 tags = ["gpqa", "debate", "multi-agent", "eval"]
 requires-python = ">=3.11"
 dependencies = [
-    # Loose pin: the consumer (e.g. prime-rl) pins the verifiers commit.
-    # Commit-pinning the parent package from a nested sub-package creates a
-    # circular dependency on its own SHA and drifts behind main.
-    "verifiers",
+    # Renderer is the env default; consumers may pin the concrete verifiers
+    # version in their workspace or lockfile.
+    "verifiers[renderers]>=0.1.15.dev7",
     "datasets>=2.14",
 ]
 
@@ -20,16 +19,8 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 include = ["gpqa_debate.py", "pyproject.toml", "README.md"]
 
-[tool.hatch.metadata]
-allow-direct-references = true
-
-# Point the unpinned `verifiers` dep at the joanvelja fork's main ref.
-# rev intentionally tracks verifiers/main HEAD; consumers (e.g. prime-rl)
-# may override this via their own [tool.uv.sources].
-[tool.uv.sources]
-verifiers = { git = "https://github.com/joanvelja/verifiers.git", branch = "main" }
-
 [tool.verifiers.eval]
+api_client_type = "renderer"
 num_examples = 5
 rollouts_per_example = 3
 max_tokens = 1024

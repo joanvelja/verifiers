@@ -320,6 +320,7 @@ async def _get_incremental_prompt_ids(
     state: Any,
     tools: list[ToolSpec] | None,
     lineage_key: str | None = None,
+    prefix_candidate_indices: tuple[int, ...] | None = None,
 ) -> "RenderedTokens | None":
     """Return the bridged prompt for the next turn as ``RenderedTokens``.
 
@@ -345,7 +346,17 @@ async def _get_incremental_prompt_ids(
     # falls back to a full re-render — matching main's TITO-on-truncation
     # behavior.
     normalized_prompt = _normalize_for_comparison(prompt)
-    for step in reversed(list(trajectory)):
+
+    if prefix_candidate_indices is None:
+        candidate_steps = reversed(list(trajectory))
+    else:
+        candidate_steps = (
+            trajectory[idx]
+            for idx in reversed(prefix_candidate_indices)
+            if isinstance(idx, int) and 0 <= idx < len(trajectory)
+        )
+
+    for step in candidate_steps:
         if stream_key is not None and stream_key not in _step_lineage_keys(step):
             continue
 
@@ -554,13 +565,22 @@ class RendererClient(
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
 
+        state = kwargs.get("state")
         bridged = await _get_incremental_prompt_ids(
             renderer=renderer,
             prompt=prompt,
-            state=kwargs.get("state"),
+            state=state,
             tools=tools,
             lineage_key=kwargs.get("lineage_key"),
+            prefix_candidate_indices=kwargs.get("prefix_candidate_indices"),
         )
+        if _get_value(state, "trajectory"):
+            metric = (
+                "client/renderer_bridge_hit"
+                if bridged is not None
+                else "client/renderer_bridge_miss"
+            )
+            self._increment_state_metric(state, metric)
         # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
         # so multimodal renderers thread per-image features through to
         # /inference/v1/generate without re-rendering the whole turn.

@@ -131,11 +131,9 @@ def maybe_judge(
     client: Client | None,
     model: str,
 ) -> JudgeRubric | None:
-    """Build a JudgeRubric iff the pack declares the template AND a client
-    is available. Otherwise return None — score-time callers raise
-    ``vf.Error`` if they actually need the missing piece."""
+    """Build a JudgeRubric iff the pack declares the template."""
     tmpl = prompts.judges.get(kind)
-    if tmpl is None or client is None:
+    if tmpl is None:
         return None
     return JudgeRubric(
         parser=Parser(),
@@ -401,7 +399,7 @@ class DebateRubric(MultiAgentRubric):
         judge = self.grader if kind == "grader" else self.matcher
         if judge is None:
             raise vf.Error(
-                f"Open-ended {kind} needs a judge_client; "
+                f"Open-ended {kind} needs a judge template; "
                 f"pack={self.prompts.source_ref!r}"
             )
         raw = await judge.judge(

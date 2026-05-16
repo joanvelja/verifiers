@@ -93,8 +93,7 @@ class Orchestrator:
                 "MA scoring writes state['mar_score'] only and never sets "
                 "step['advantage'], so the in-tree trainer would build "
                 "invalid microbatches. Use the prime-rl orchestrator with "
-                "rollout_to_member_rollouts + compute_rae_advantages instead "
-                "(see docs/multi_agent_architecture.md)."
+                "rollout_to_member_rollouts + compute_rae_advantages instead."
             )
 
         self.env = env

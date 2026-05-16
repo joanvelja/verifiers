@@ -17,9 +17,9 @@
 
 ### Requirements
 - `HF_TOKEN` is required for the gated GPQA dataset.
-- `OPENROUTER_API_KEY` is required only when using per-agent OpenRouter provider pinning through `debater_providers` or `judge_providers`.
-- This environment depends on the in-development multi-agent runtime in `verifiers`. Use a local `verifiers` checkout or a published/pinned version that includes `MultiAgentEnv`, `DebateEnv`, `MultiAgentRubric`, and `MARScore`.
-- This env currently tracks dev multi-agent runtime (pinned git commit).
+- This environment depends on the multi-agent runtime in `verifiers[renderers]>=0.1.15.dev7`. Use a local `verifiers` checkout or a published/pinned version that includes `MultiAgentEnv`, `DebateEnv`, `MultiAgentRubric`, `MARScore`, and `RendererClient`.
+- This env defaults `prime eval run` to `api_client_type="renderer"`. Use `--api-client-type openai_chat_completions_token` when running against a token-route vLLM endpoint, or `--api-client-type openai_chat_completions` for generic OpenAI-compatible chat endpoints.
+- Runtime routing is intentionally outside this package. Learner/opponent endpoints, provider pinning, LoRA aliases, and seat-selection policy should be handled by the rollout runtime using per-request lineage metadata.
 
 ### Quickstart
 Run a small local evaluation:
@@ -27,6 +27,7 @@ Run a small local evaluation:
 ```bash
 prime eval run gpqa-debate \
   -m openai/gpt-4.1-mini \
+  --api-client-type openai_chat_completions \
   -n 5 -r 1 -t 1024 -T 1.0
 ```
 
@@ -35,6 +36,7 @@ Save trajectory data for multi-agent training projections:
 ```bash
 prime eval run gpqa-debate \
   -m openai/gpt-4.1-mini \
+  --api-client-type openai_chat_completions \
   -n 50 -r 4 -s -C trajectory
 ```
 
@@ -54,11 +56,7 @@ prime env push --path ./environments/gpqa_debate --visibility=PRIVATE
 | `seed` | int | `0` | Choice-shuffling seed |
 | `schedule` | list | default 5-slot schedule | Override turn schedule as a list of `{slot_id, agents, phase}` dicts |
 | `truth_member` | str | `"debater_a"` | Member credited as the truth-tracking seat |
-| `debater_model` | str or null | null | Override model for both debaters |
-| `judge_model` | str or null | null | Override model for the judge |
-| `debater_providers` | list[str] or null | null | OpenRouter provider order for debaters |
-| `judge_providers` | list[str] or null | null | OpenRouter provider order for the judge |
-| `allow_fallbacks` | bool | `false` | Whether OpenRouter may fall back outside the listed providers |
+| `judge_model` | str | `"gpt-5.4-nano"` | Model used by optional open-ended grader/matcher templates |
 
 ### Metrics
 | Metric | Meaning |

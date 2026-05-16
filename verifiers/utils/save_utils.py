@@ -319,10 +319,15 @@ def state_to_output(
             mar = MARScore.model_validate(mar)
         output["mar_score"] = mar.model_dump(exclude_none=True)
         output["reward"] = mar.episode_scalar
+        state_metrics = state.get("metrics") or {}
+        if not isinstance(state_metrics, Mapping):
+            state_metrics = {}
         flat_metrics = mar.to_metrics_flat()
-        for k, v in flat_metrics.items():
+        combined_metrics = dict(state_metrics)
+        combined_metrics.update(flat_metrics)
+        for k, v in combined_metrics.items():
             output[k] = v
-        output["metrics"] = dict(flat_metrics)
+        output["metrics"] = combined_metrics
     else:
         # flatten metrics to top-level keys (backwards compatibility)
         state_metrics = state.get("metrics") or {}

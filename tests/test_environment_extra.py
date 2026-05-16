@@ -24,6 +24,8 @@ from verifiers.rubrics.rubric import Rubric
 from verifiers.types import (
     ClientConfig,
     GenerateOutputs,
+    MARScore,
+    MemberScore,
     Response,
     ResponseMessage,
     RolloutInput,
@@ -238,10 +240,15 @@ async def test_get_model_response_uses_request_context_lineage_and_tracker(
         request_context=ModelRequestContext(
             lineage_key="agent_a",
             usage_tracker=child_tracker,
+            prefix_candidate_indices=(1, 3),
         ),
     )
 
     assert mock_client.get_response.call_args.kwargs["lineage_key"] == "agent_a"
+    assert mock_client.get_response.call_args.kwargs["prefix_candidate_indices"] == (
+        1,
+        3,
+    )
     assert child_tracker.snapshot() == {"input_tokens": 5.0, "output_tokens": 4.0}
     parent_usage = env.get_state_usage(state)
     assert parent_usage in (None, {"input_tokens": 0.0, "output_tokens": 0.0})
@@ -314,6 +321,40 @@ def test_state_to_output_persists_judge_response_without_state_columns():
     output = state_to_output(state, state_columns=[])
 
     assert output["judge_response"] == {"rendered prompt": "CORRECT"}
+
+
+def test_state_to_output_merges_state_metrics_with_marscore_metrics():
+    state = vf.State(
+        input=RolloutInput(
+            prompt=[{"role": "user", "content": "debate"}],
+            answer="A",
+            task="default",
+            example_id="mar-metrics",
+        )
+    )
+    state["completion"] = [{"role": "assistant", "content": "done"}]
+    state["trajectory"] = []
+    state["reward"] = 0.0
+    state["metrics"] = {"client/renderer_bridge_hit": 2.0}
+    state["timing"] = {
+        "generation_ms": 10.0,
+        "scoring_ms": 20.0,
+        "total_ms": 30.0,
+        "start_time": 0.0,
+    }
+    state["mar_score"] = MARScore(
+        members=[MemberScore(member_id="debater_a", reward=1.0)],
+        episode_scalar=1.0,
+        episode_metrics={"agreement": 0.5},
+    )
+
+    output = state_to_output(state, state_columns=[])
+
+    assert output["metrics"]["client/renderer_bridge_hit"] == 2.0
+    assert output["metrics"]["agreement"] == 0.5
+    assert output["metrics"]["reward/debater_a"] == 1.0
+    assert output["client/renderer_bridge_hit"] == 2.0
+    assert output["agreement"] == 0.5
 
 
 @pytest.mark.asyncio

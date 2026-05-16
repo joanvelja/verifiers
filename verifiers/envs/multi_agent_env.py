@@ -6,8 +6,7 @@ environments (debate, RPS, PD, proposer-solver, ...):
 - Slot-scheduled rollout loop (sequential and simultaneous barriers).
 - Stop conditions with priority ordering (error > schedule_exhausted >
   prompt_too_long).
-- Per-member agent-to-endpoint binding for self-play / adapters /
-  external-opponent training.
+- Per-member request lineage for cache partitioning and external routing.
 - Atomic simultaneous-slot commit (all commits land or none do).
 
 Subclasses implement only the domain-specific bits: ``build_prompt``,
@@ -24,7 +23,7 @@ import logging
 import re
 import time
 from abc import abstractmethod
-from typing import Any, Callable, Literal, final
+from typing import Any, Literal, final
 
 import verifiers as vf
 from verifiers.clients import Client
@@ -57,6 +56,7 @@ from verifiers.utils.usage_utils import StateUsageTracker
 _log = logging.getLogger(__name__)
 
 VisibilityMode = Literal["full", "public_only", "hidden"]
+_PREFIX_CANDIDATE_INDICES_KEY = "_multi_agent_prefix_candidate_indices"
 
 
 class MultiAgentEnv(vf.Environment):
@@ -86,11 +86,6 @@ class MultiAgentEnv(vf.Environment):
         *,
         schedule: SlotProgram,
         members: list[str],
-        agent_bindings: dict[str, tuple[Client | None, str | None]] | None = None,
-        agent_bindings_fn: Callable[
-            [State], dict[str, tuple[Client | None, str | None]]
-        ]
-        | None = None,
         think_tag: str = "thinking",
         **kwargs: Any,
     ) -> None:
@@ -99,30 +94,9 @@ class MultiAgentEnv(vf.Environment):
             raise ValueError("MultiAgentEnv requires a non-empty members list")
         if len(members) != len(set(members)):
             raise ValueError(f"MultiAgentEnv.members contains duplicates: {members}")
-        bindings = agent_bindings or {}
-        stray = set(bindings) - set(members)
-        if stray:
-            raise ValueError(
-                f"agent_bindings keys not in members: {sorted(stray)} "
-                f"(members={members})"
-            )
         self.schedule: SlotProgram = schedule
         self.members: list[str] = list(members)
-        self._members_set: frozenset[str] = frozenset(members)
-        self.agent_bindings: dict[str, tuple[Client | None, str | None]] = dict(
-            bindings
-        )
-        self._agent_bindings_fn = agent_bindings_fn
         self.think_tag = think_tag
-
-        # Probe the dynamic bindings fn on a dummy state so callers see
-        # fn bugs (wrong shape / missing or stray members) at construction
-        # rather than many slots into the first rollout. Subclasses
-        # override ``_build_probe_state`` to seed domain-specific info
-        # keys their fn reads (e.g. ``info.learner_seat`` for debate).
-        if agent_bindings_fn is not None:
-            probe = self._build_probe_state()
-            self._validate_dynamic_bindings(agent_bindings_fn(probe), context="probe")
 
     # -- abstract: subclass must implement -----------------------------------
 
@@ -150,85 +124,6 @@ class MultiAgentEnv(vf.Environment):
         """
         return None
 
-    def _build_probe_state(self) -> State:
-        """Construct a minimal State used at init to dry-run the bindings fn.
-
-        Subclasses whose binding functions read domain-specific info keys
-        (e.g. ``info.learner_seat`` for debate) should override this to
-        seed those keys with plausible default values. The default probe
-        carries an empty ``info`` dict -- a bindings fn that KeyErrors on
-        it would break on any real state that hasn't set the key yet.
-        """
-        probe = State()
-        probe["input"] = {
-            "info": {},
-            "example_id": "_probe",
-            "task": "_probe",
-            "prompt": [],
-            "answer": "",
-        }
-        return probe
-
-    def _validate_dynamic_bindings(
-        self,
-        bindings: object,
-        *,
-        context: str,
-    ) -> None:
-        """Raise if ``bindings`` isn't a dict or doesn't match ``self.members``.
-
-        Shared between the init-time probe and per-call runtime validation
-        in ``_get_bindings``. A dynamic fn whose shape or key set varies
-        per state is possible, so the per-call check catches divergences
-        the probe can't. ``context`` (e.g. ``"probe"`` or ``"runtime"``)
-        is stitched into the error message for diagnosability.
-        """
-        if not isinstance(bindings, dict):
-            raise TypeError(
-                f"agent_bindings_fn must return a dict ({context}), got "
-                f"{type(bindings).__name__}"
-            )
-        keys = set(bindings)
-        missing = self._members_set - keys
-        if missing:
-            raise ValueError(
-                f"agent_bindings_fn omits members {sorted(missing)} "
-                f"({context}); returned keys={sorted(keys)}, "
-                f"members={self.members}"
-            )
-        stray = keys - self._members_set
-        if stray:
-            raise ValueError(
-                f"agent_bindings_fn returned keys {sorted(stray)} not in "
-                f"members {self.members} ({context})"
-            )
-
-    def _get_bindings(
-        self, state: State
-    ) -> dict[str, tuple[Client | None, str | None]]:
-        """Return the full (member_id -> (client, model)) binding map.
-
-        Either the static ``agent_bindings`` dict or a fresh validated
-        call to the bindings function.
-        """
-        if self._agent_bindings_fn is None:
-            return self.agent_bindings
-        bindings = self._agent_bindings_fn(state)
-        self._validate_dynamic_bindings(bindings, context="runtime")
-        return bindings
-
-    def get_agent_binding(
-        self, member_id: str, state: State
-    ) -> tuple[Client | None, str | None]:
-        """Return the (client, model) binding for ``member_id`` in ``state``.
-
-        State-aware: when an ``agent_bindings_fn`` is configured, its
-        per-state map is used; otherwise falls back to the static
-        ``agent_bindings`` dict. Returns ``(None, None)`` for members
-        with no binding (use rollout-default client/model).
-        """
-        return self._get_bindings(state).get(member_id, (None, None))
-
     def visibility_policy(self, utt: Utterance, viewer_id: str) -> VisibilityMode:
         """Control what ``viewer_id`` sees of ``utt``.
 
@@ -255,6 +150,59 @@ class MultiAgentEnv(vf.Environment):
         prompt = await self.build_prompt(state, agent, slot)
         prompt = maybe_normalize_messages(prompt, field_name="multi_agent_prompt")
         return fold_consecutive_user_messages(prompt)
+
+    def _get_prefix_candidate_indices(
+        self, state: State, member_id: str
+    ) -> tuple[int, ...]:
+        """Return trajectory indices that can anchor ``member_id``'s next prompt.
+
+        The trajectory is a flat transcript across every member. Renderer/token
+        continuation is per-member, so clients need a narrow candidate set to
+        avoid repeatedly scanning unrelated turns and accidentally anchoring on
+        another member with a compatible-looking prefix.
+        """
+        raw = state.get(_PREFIX_CANDIDATE_INDICES_KEY)
+        if not isinstance(raw, dict):
+            raw = self._bootstrap_prefix_candidate_indices(state)
+            state[_PREFIX_CANDIDATE_INDICES_KEY] = raw
+
+        indices = raw.get(member_id, ())
+        return tuple(i for i in indices if isinstance(i, int))
+
+    def _record_prefix_candidate_index(
+        self, state: State, member_id: str, step_index: int
+    ) -> None:
+        raw = state.get(_PREFIX_CANDIDATE_INDICES_KEY)
+        if not isinstance(raw, dict):
+            raw = self._bootstrap_prefix_candidate_indices(state)
+            state[_PREFIX_CANDIDATE_INDICES_KEY] = raw
+        raw.setdefault(member_id, []).append(step_index)
+
+    @staticmethod
+    def _bootstrap_prefix_candidate_indices(state: State) -> dict[str, list[int]]:
+        by_member: dict[str, list[int]] = {}
+        for idx, step in enumerate(state.get("trajectory", []) or []):
+            extras = step.get("extras") if isinstance(step, dict) else None
+            member_id = extras.get("member_id") if isinstance(extras, dict) else None
+            if isinstance(member_id, str):
+                by_member.setdefault(member_id, []).append(idx)
+        return by_member
+
+    @staticmethod
+    def _merge_metrics(state: State, metrics: object) -> None:
+        if not isinstance(metrics, dict):
+            return
+        target = state.get("metrics")
+        if not isinstance(target, dict):
+            target = {}
+            state["metrics"] = target
+        for key, value in metrics.items():
+            if not isinstance(key, str) or not isinstance(value, (int, float)):
+                continue
+            previous = target.get(key, 0.0)
+            if not isinstance(previous, (int, float)):
+                previous = 0.0
+            target[key] = float(previous) + float(value)
 
     # -- stop conditions (priority-ordered) ----------------------------------
 
@@ -313,16 +261,16 @@ class MultiAgentEnv(vf.Environment):
     async def _run_sequential_slot(self, state: State, slot: TurnSlot) -> None:
         agent = slot.agents[0]
         prompt = await self._prepare_prompt(state, agent, slot)
-        agent_client, agent_model = self.get_agent_binding(agent, state)
         parent_tracker = self._get_usage_tracker(state, create_if_missing=True)
         response = await self.get_model_response(
             state,
             prompt,
-            client=agent_client,
-            model=agent_model,
             request_context=ModelRequestContext(
                 lineage_key=agent,
                 usage_tracker=parent_tracker,
+                prefix_candidate_indices=self._get_prefix_candidate_indices(
+                    state, agent
+                ),
             ),
         )
         content = _coerce_text_content(response.message.content)
@@ -342,6 +290,7 @@ class MultiAgentEnv(vf.Environment):
         fields = await self.extract_fields(utt.public_channel, agent, slot)
         step = await self._build_step(state, prompt, response, utt, fields)
         state["trajectory"].append(step)
+        self._record_prefix_candidate_index(state, agent, len(state["trajectory"]) - 1)
 
     @final
     async def _run_simultaneous_slot(self, state: State, slot: TurnSlot) -> None:
@@ -365,14 +314,9 @@ class MultiAgentEnv(vf.Environment):
              succeeds atomically.
         """
         prompts = [await self._prepare_prompt(state, a, slot) for a in slot.agents]
-        # Resolve once per slot, not per agent — a dynamic bindings fn
-        # is a pure function on state, so N calls would be redundant.
-        bindings = self._get_bindings(state)
-        # Static ``agent_bindings`` is allowed to cover only a subset of
-        # members (absent member → use rollout-default client/model). The
-        # dynamic-fn path is schema-validated to have full coverage; the
-        # static path isn't. Keep the fallback.
-        overrides = [bindings.get(a, (None, None)) for a in slot.agents]
+        prefix_candidate_indices = [
+            self._get_prefix_candidate_indices(state, a) for a in slot.agents
+        ]
 
         # Per-agent request contexts isolate the prefix-cache partition key
         # (``lineage_key``) and usage accounting across concurrent branches
@@ -384,6 +328,7 @@ class MultiAgentEnv(vf.Environment):
             parent_tracker.fork() if parent_tracker is not None else None
             for _ in slot.agents
         ]
+        per_agent_states = [State(state, metrics={}) for _ in slot.agents]
 
         # Phase 1: fan out concurrent model calls. On first raise, cancel
         # still-pending siblings — no wasted tokens, no late completions
@@ -396,15 +341,13 @@ class MultiAgentEnv(vf.Environment):
 
         async def _run_one(idx: int) -> None:
             p = prompts[idx]
-            o = overrides[idx]
             responses[idx] = await self.get_model_response(
-                state,
+                per_agent_states[idx],
                 p,
-                client=o[0],
-                model=o[1],
                 request_context=ModelRequestContext(
                     lineage_key=slot.agents[idx],
                     usage_tracker=per_agent_trackers[idx],
+                    prefix_candidate_indices=prefix_candidate_indices[idx],
                 ),
             )
 
@@ -514,9 +457,14 @@ class MultiAgentEnv(vf.Environment):
         # assignment + usage-tracker merge. No awaits, no raises after this
         # point. Merging is the accounting-side counterpart of the kernel
         # assignment — both happen iff the slot succeeds.
-        for step in staged_steps:
+        next_step_index = len(state["trajectory"])
+        for agent, step in zip(slot.agents, staged_steps):
             state["trajectory"].append(step)
+            self._record_prefix_candidate_index(state, agent, next_step_index)
+            next_step_index += 1
         state["_kernel"] = staged_kernel
+        for branch_state in per_agent_states:
+            self._merge_metrics(state, branch_state.get("metrics"))
         if isinstance(parent_tracker, StateUsageTracker):
             for child in per_agent_trackers:
                 if child is not None:

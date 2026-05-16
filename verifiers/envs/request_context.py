@@ -9,3 +9,4 @@ class ModelRequestContext:
 
     lineage_key: str | None = None
     usage_tracker: StateUsageTracker | None = None
+    prefix_candidate_indices: tuple[int, ...] | None = None

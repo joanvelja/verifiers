@@ -46,25 +46,23 @@ GPQA_ROW = {
     ],
 )
 def test_gpqa_rows_use_info_env_id_not_legacy_task(
-    module_name: str, rel_path: str, env_id: str
+    module_name: str, rel_path: str, env_id: str, monkeypatch: pytest.MonkeyPatch
 ):
     module = load_env_module(module_name, rel_path)
     if env_id == "gpqa_consultancy":
         row = module._format_row(GPQA_ROW, random.Random(0), 0.5)
     elif env_id == "gpqa_debate":
-        row = module._format_row(
-            GPQA_ROW,
-            random.Random(0),
-            example_idx=0,
-            seat_mode=None,
-            pin=None,
-            seat_rng=None,
-        )
+        monkeypatch.setattr(module.vf, "ensure_keys", lambda keys: None)
+        monkeypatch.setattr(module, "load_dataset", lambda *args, **kwargs: [GPQA_ROW])
+        env = module.load_environment(num_train_examples=1, num_eval_examples=0)
+        row = env.get_dataset()[0]
     else:
         row = module._format_row(GPQA_ROW, random.Random(0))
 
     assert "task" not in row
     assert row["info"]["env_id"] == env_id
+    if env_id == "gpqa_debate":
+        assert "learner_seat" not in row["info"]
 
 
 class FakeJudgeClient:

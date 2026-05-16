@@ -229,6 +229,8 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
             defaults["max_tokens"] = eval_config["max_tokens"]
         if "temperature" in eval_config:
             defaults["temperature"] = eval_config["temperature"]
+        if "api_client_type" in eval_config:
+            defaults["api_client_type"] = eval_config["api_client_type"]
 
         if defaults:
             logger.debug(
@@ -599,6 +601,7 @@ def main(argv: list[str] | None = None):
         endpoint_lookup_id = (
             raw_endpoint_id if raw_endpoint_id is not None else raw_model
         )
+        env_default_client_type = env_defaults.get("api_client_type")
         raw_client_type = raw.get("api_client_type")
         raw_api_key_var = raw.get("api_key_var")
         raw_api_base_url = raw.get("api_base_url")
@@ -630,7 +633,9 @@ def main(argv: list[str] | None = None):
             # Start from registry values
             api_key_var = endpoint["key"]
             api_base_url = endpoint["url"]
-            client_type = endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
+            client_type = endpoint.get(
+                "api_client_type", env_default_client_type or DEFAULT_CLIENT_TYPE
+            )
 
             endpoint_models = {entry["model"] for entry in endpoint_group}
             if len(endpoint_models) > 1:
@@ -695,7 +700,9 @@ def main(argv: list[str] | None = None):
             client_type = (
                 raw_client_type
                 if client_type_override
-                else provider_cfg.get("client_type", DEFAULT_CLIENT_TYPE)
+                else provider_cfg.get(
+                    "client_type", env_default_client_type or DEFAULT_CLIENT_TYPE
+                )
             )
 
         raw_max_tokens = raw.get("max_tokens")

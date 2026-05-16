@@ -150,7 +150,7 @@ key = "ANTHROPIC_API_KEY"
 api_client_type = "anthropic_messages"
 ```
 
-Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly, and `"openai_responses"` for OpenAI-compatible Responses endpoints.
+Each endpoint entry supports an optional `api_client_type` field to select the client implementation. Precedence is: endpoint row `api_client_type`, then the environment's `[tool.verifiers.eval].api_client_type`, then the global default `"openai_chat_completions"`. Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly, and `"openai_responses"` for OpenAI-compatible Responses endpoints.
 
 Optional HTTP headers for inference requests use a short TOML key `headers` (inline table). The alias `extra_headers` is accepted with the same shape; do not set both on one row.
 
@@ -308,6 +308,7 @@ Environments can specify default evaluation parameters in their `pyproject.toml`
 
 ```toml
 [tool.verifiers.eval]
+api_client_type = "renderer"
 num_examples = 100
 rollouts_per_example = 5
 ```

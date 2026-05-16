@@ -1,5 +1,5 @@
 from functools import lru_cache
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -442,6 +442,126 @@ async def test_get_incremental_prompt_ids_partitions_by_lineage_key():
 
     assert result is not None
     assert result.token_ids[:3] == [1, 2, 99]
+
+
+@pytest.mark.asyncio
+async def test_get_incremental_prompt_ids_uses_candidate_indices_without_flat_scan():
+    renderer = _BridgeRenderer()
+    prompt_messages = [SystemMessage(content="s"), UserMessage(content="u")]
+    completion_messages = [AssistantMessage(content="a")]
+    prompt = [
+        *[_to_renderer_message(m) for m in prompt_messages + completion_messages],
+        _to_renderer_message(UserMessage(content="continue")),
+    ]
+    state = {
+        "trajectory": [
+            {
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [1],
+                    "completion_ids": [2, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+                "extras": {"member_id": "agent_a"},
+            },
+            {
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [7],
+                    "completion_ids": [8, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+                "extras": {"member_id": "agent_b"},
+            },
+        ]
+    }
+
+    result = await _get_incremental_prompt_ids(
+        renderer=renderer,
+        prompt=prompt,
+        state=state,
+        tools=None,
+        prefix_candidate_indices=(0,),
+    )
+
+    assert result is not None
+    assert result.token_ids[:3] == [1, 2, 99]
+
+
+@pytest.mark.asyncio
+async def test_renderer_client_records_bridge_hit_and_miss_metrics():
+    client = object.__new__(RendererClient)
+    client._renderer = _BridgeRenderer()
+    client._client = object()
+    client._config = None
+    client._pool_size = 1
+
+    prompt_messages = [SystemMessage(content="s"), UserMessage(content="u")]
+    completion_messages = [AssistantMessage(content="a")]
+    prompt = [
+        *[_to_renderer_message(m) for m in prompt_messages + completion_messages],
+        _to_renderer_message(UserMessage(content="continue")),
+    ]
+    matching_state = {
+        "trajectory": [
+            {
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [1],
+                    "completion_ids": [2, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+                "extras": {"member_id": "agent_a"},
+            }
+        ],
+        "metrics": {},
+    }
+    mismatching_state = {
+        "trajectory": [
+            {
+                "prompt": [UserMessage(content="other")],
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [7],
+                    "completion_ids": [8, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+                "extras": {"member_id": "agent_a"},
+            }
+        ],
+        "metrics": {},
+    }
+
+    with patch(
+        "verifiers.clients.renderer_client.generate", new_callable=AsyncMock
+    ) as generate_mock:
+        generate_mock.return_value = {"content": "ok"}
+        await client.get_native_response(
+            prompt=prompt,
+            model="test-model",
+            sampling_args={},
+            tools=None,
+            state=matching_state,
+            lineage_key="agent_a",
+        )
+        await client.get_native_response(
+            prompt=prompt,
+            model="test-model",
+            sampling_args={},
+            tools=None,
+            state=mismatching_state,
+            lineage_key="agent_a",
+        )
+
+    assert matching_state["metrics"]["client/renderer_bridge_hit"] == 1.0
+    assert mismatching_state["metrics"]["client/renderer_bridge_miss"] == 1.0
 
 
 @pytest.mark.asyncio

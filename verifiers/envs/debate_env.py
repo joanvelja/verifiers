@@ -13,9 +13,8 @@ inherited from :class:`MultiAgentEnv`.
 """
 
 import logging
-from typing import Any, Callable
+from typing import Any
 
-from verifiers.clients import Client
 from verifiers.envs.debate.parsing import extract_fields
 from verifiers.envs.debate.prompts import (
     DebatePrompts,
@@ -41,6 +40,7 @@ from verifiers.types import (
 )
 
 _log = logging.getLogger(__name__)
+_PROMPT_BODY_CACHE_KEY = "_debate_prompt_body_cache"
 
 
 class DebateEnv(MultiAgentEnv):
@@ -62,19 +62,11 @@ class DebateEnv(MultiAgentEnv):
         schedule: SlotProgram,
         prompts: DebatePrompts,
         members: list[str],
-        *,
-        agent_bindings: dict[str, tuple[Client | None, str | None]] | None = None,
-        agent_bindings_fn: Callable[
-            [State], dict[str, tuple[Client | None, str | None]]
-        ]
-        | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(
             schedule=schedule,
             members=members,
-            agent_bindings=agent_bindings,
-            agent_bindings_fn=agent_bindings_fn,
             think_tag=prompts.think_tag,
             **kwargs,
         )
@@ -129,23 +121,6 @@ class DebateEnv(MultiAgentEnv):
             self._validate_prompts_cover_schedule(prompts, schedule)
 
         self.prompts = prompts
-
-    def _build_probe_state(self) -> State:
-        """Seed ``info.learner_seat`` with a valid default so debate
-        binding functions that branch on it don't KeyError during the
-        init probe.
-
-        A typical debate bindings fn looks like ``info.learner_seat`` ->
-        ``(None, None)`` for the learner seat, ``(opp_client, opp_model)``
-        for the opposite seat. The probe defaults to ``members[0]`` as
-        learner; functions that inspect further info keys should use
-        ``.get(..., default)`` -- the contract is that the fn must
-        cover every member on any well-formed state.
-        """
-        probe = super()._build_probe_state()
-        info = probe["input"]["info"]
-        info.setdefault("learner_seat", self.members[0])
-        return probe
 
     @staticmethod
     def _validate_prompts_cover_schedule(
@@ -306,8 +281,12 @@ class DebateEnv(MultiAgentEnv):
         kernel_state: KernelState = state["_kernel"]
         question = question_from_state(state)
         num_rounds = self._member_round_count(member_id)
-        current_round = sum(
-            1 for u in kernel_state.transcript if u.member_id == member_id
+        body, current_round = self._render_cached_transcript_body(
+            state,
+            member_id,
+            kernel_state.transcript,
+            num_rounds,
+            question,
         )
         ctx_current = self._build_prompt_context(
             state, member_id, slot.phase, current_round, num_rounds, question
@@ -320,20 +299,86 @@ class DebateEnv(MultiAgentEnv):
         if q_text:
             msgs.append(UserMessage(content=q_text))
 
-        own_round_so_far = 0
-        for utt in kernel_state.transcript:
-            if utt.member_id == member_id:
-                msgs.extend(
-                    self._render_own_turn(
-                        utt, member_id, own_round_so_far, num_rounds, question, state
-                    )
-                )
-                own_round_so_far += 1
-            else:
-                msgs.append(self._render_opponent_message(utt, member_id))
-
+        msgs.extend(body)
         msgs.extend(self._render_current_suffix(member_id, slot, ctx_current))
         return msgs
+
+    def _render_cached_transcript_body(
+        self,
+        state: State,
+        member_id: str,
+        transcript: tuple[Utterance, ...],
+        num_rounds: int,
+        question: str,
+    ) -> tuple[list[Message], int]:
+        """Render committed transcript messages incrementally for ``member_id``.
+
+        The head (system/question) and current suffix are intentionally
+        rendered fresh by ``build_prompt``. Only the committed transcript body
+        is cached; it depends on immutable utterances plus stable task fields,
+        and is the part that otherwise caused every prompt build to rescan the
+        whole episode.
+        """
+        cache_root = state.get(_PROMPT_BODY_CACHE_KEY)
+        if not isinstance(cache_root, dict):
+            cache_root = {}
+            state[_PROMPT_BODY_CACHE_KEY] = cache_root
+
+        cache = cache_root.get(member_id)
+        answer = state["answer"]
+        if (
+            not isinstance(cache, dict)
+            or cache.get("question") != question
+            or cache.get("answer") != answer
+            or cache.get("num_rounds") != num_rounds
+            or cache.get("processed", 0) > len(transcript)
+        ):
+            cache = {
+                "question": question,
+                "answer": answer,
+                "num_rounds": num_rounds,
+                "processed": 0,
+                "own_round": 0,
+                "body": [],
+                "source_transcript": (),
+            }
+            cache_root[member_id] = cache
+
+        body = cache["body"]
+        own_round = cache["own_round"]
+        processed = cache["processed"]
+        source_transcript = cache.get("source_transcript", ())
+        # Normal kernel traffic is append-only; direct build_prompt callers may
+        # still swap in a replacement KernelState. Keep the cache honest by
+        # validating the already-rendered prefix before rendering only the
+        # suffix. This comparison is much cheaper than re-running the Jinja
+        # render path for every historical utterance.
+        if (
+            processed
+            and source_transcript is not transcript
+            and transcript[:processed] != source_transcript[:processed]
+        ):
+            body = []
+            own_round = 0
+            processed = 0
+
+        for utt in transcript[processed:]:
+            if utt.member_id == member_id:
+                body.extend(
+                    self._render_own_turn(
+                        utt, member_id, own_round, num_rounds, question, state
+                    )
+                )
+                own_round += 1
+            else:
+                body.append(self._render_opponent_message(utt, member_id))
+            processed += 1
+
+        cache["processed"] = processed
+        cache["own_round"] = own_round
+        cache["body"] = body
+        cache["source_transcript"] = transcript
+        return list(body), own_round
 
     # -- build_prompt helpers ------------------------------------------------
 
@@ -490,9 +535,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
     Required: schedule_slots, members, truth_member.
     Prompt source (exactly one): ``prompts_ref`` (str, registry lookup)
     or ``prompts`` (already-built DebatePrompts).
-    Optional: agent_bindings / agent_bindings_fn, judge_client OR
-    (judge_api_key + judge_base_url + judge_max_retries), judge_model,
-    dataset/eval_dataset.
+    Optional: judge_client, judge_model, dataset/eval_dataset.
     """
     from verifiers.envs.debate_rubric import DebateRubric
 
@@ -510,25 +553,17 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         kwargs.pop("prompts_ref", None),
         kwargs.pop("prompts", None),
     )
-    judge_client = _build_judge_client(
-        explicit=kwargs.pop("judge_client", None),
-        api_key=kwargs.pop("judge_api_key", None),
-        base_url=kwargs.pop("judge_base_url", None),
-        max_retries=kwargs.pop("judge_max_retries", 10),
-    )
     rubric = DebateRubric(
         truth_member=kwargs.pop("truth_member"),
         members=kwargs["members"],  # don't pop — env needs it too
         prompts=prompts,
-        judge_client=judge_client,
+        judge_client=kwargs.pop("judge_client", None),
         judge_model=kwargs.pop("judge_model", "gpt-4.1-nano"),
     )
     return DebateEnv(
         schedule=schedule,
         prompts=prompts,
         members=kwargs.pop("members"),
-        agent_bindings=kwargs.pop("agent_bindings", None),
-        agent_bindings_fn=kwargs.pop("agent_bindings_fn", None),
         rubric=rubric,
         **kwargs,
     )
@@ -550,37 +585,3 @@ def _resolve_prompts_arg(
     if prompts_ref is not None:
         return resolve_prompts(prompts_ref)
     raise ValueError("Must provide either 'prompts_ref' or 'prompts'")
-
-
-def _build_judge_client(
-    *,
-    explicit: Any | None,
-    api_key: str | None,
-    base_url: str | None,
-    max_retries: int,
-) -> Any | None:
-    """Return a judge client from an explicit object OR connection kwargs.
-
-    Pure construction — no validation. Packs without a judge template
-    (selfplay, MCQ-only) and packs whose open-ended grading is optional
-    legitimately run with no client. The rubric's ``verdict`` raises at
-    call time if an open-ended grade is actually attempted against a
-    None client.
-    """
-    if explicit is not None:
-        return explicit
-    if api_key is None and base_url is None:
-        return None
-    from openai import AsyncOpenAI
-
-    from verifiers.clients.openai_chat_completions_client import (
-        OpenAIChatCompletionsClient,
-    )
-
-    return OpenAIChatCompletionsClient(
-        AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            max_retries=max_retries,
-        )
-    )

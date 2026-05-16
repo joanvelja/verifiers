@@ -182,6 +182,27 @@ def test_get_env_eval_defaults_reads_sampling_defaults(tmp_path: Path, monkeypat
     }
 
 
+def test_get_env_eval_defaults_reads_client_type(tmp_path: Path, monkeypatch):
+    module_name = f"client_type_defaults_env_{time.time_ns()}"
+    env_id = module_name.replace("_", "-")
+    package_dir = tmp_path / module_name
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "pyproject.toml").write_text(
+        '[tool.verifiers.eval]\napi_client_type = "renderer"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    try:
+        defaults = vf_eval.get_env_eval_defaults(env_id)
+    finally:
+        sys.modules.pop(module_name, None)
+
+    assert defaults == {"api_client_type": "renderer"}
+
+
 def test_get_env_eval_defaults_for_single_file_module(tmp_path: Path, monkeypatch):
     module_name = f"single_file_env_{time.time_ns()}"
     env_id = module_name.replace("_", "-")
@@ -272,6 +293,41 @@ def test_cli_uses_env_sampling_defaults_when_flags_unset(monkeypatch, run_cli):
     sa = captured["sampling_args"]
     assert sa["max_tokens"] == 512
     assert sa["temperature"] == 0.2
+
+
+def test_cli_uses_env_client_type_default_when_unset(monkeypatch, run_cli):
+    monkeypatch.setattr(
+        vf_eval,
+        "get_env_eval_defaults",
+        lambda _env_id: {"api_client_type": "renderer"},
+    )
+    captured = run_cli(
+        monkeypatch,
+        {
+            "api_client_type": None,
+        },
+    )
+
+    assert captured["configs"][0].client_config.client_type == "renderer"
+
+
+def test_cli_client_type_flag_overrides_env_default(monkeypatch, run_cli):
+    monkeypatch.setattr(
+        vf_eval,
+        "get_env_eval_defaults",
+        lambda _env_id: {"api_client_type": "renderer"},
+    )
+    captured = run_cli(
+        monkeypatch,
+        {
+            "api_client_type": "openai_chat_completions_token",
+        },
+    )
+
+    assert (
+        captured["configs"][0].client_config.client_type
+        == "openai_chat_completions_token"
+    )
 
 
 def test_cli_temperature_not_added_when_none(monkeypatch, run_cli):
@@ -488,6 +544,68 @@ def test_cli_model_flag_uses_endpoint_client_type_when_provided(monkeypatch, run
     assert config.client_config.client_type == "anthropic_messages"
     assert config.client_config.api_key_var == "ANTHROPIC_API_KEY"
     assert config.client_config.api_base_url == "https://api.anthropic.com"
+
+
+def test_cli_endpoint_alias_uses_env_client_type_default_when_endpoint_omits_it(
+    monkeypatch, run_cli
+):
+    monkeypatch.setattr(
+        vf_eval,
+        "get_env_eval_defaults",
+        lambda _env_id: {"api_client_type": "renderer"},
+    )
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "qwen",
+            "api_client_type": None,
+            "api_key_var": None,
+            "api_base_url": None,
+        },
+        endpoints={
+            "qwen": [
+                {
+                    "model": "Qwen/Qwen3-8B",
+                    "url": "https://renderer.example/v1",
+                    "key": "PRIME_API_KEY",
+                }
+            ]
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.endpoint_id == "qwen"
+    assert config.client_config.client_type == "renderer"
+
+
+def test_cli_endpoint_client_type_overrides_env_default(monkeypatch, run_cli):
+    monkeypatch.setattr(
+        vf_eval,
+        "get_env_eval_defaults",
+        lambda _env_id: {"api_client_type": "renderer"},
+    )
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "haiku",
+            "api_client_type": None,
+            "api_key_var": None,
+            "api_base_url": None,
+        },
+        endpoints={
+            "haiku": [
+                {
+                    "model": "claude-haiku-4-5",
+                    "url": "https://api.anthropic.com",
+                    "key": "ANTHROPIC_API_KEY",
+                    "api_client_type": "anthropic_messages",
+                }
+            ]
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.client_config.client_type == "anthropic_messages"
 
 
 def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):

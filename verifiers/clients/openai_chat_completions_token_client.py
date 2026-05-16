@@ -45,6 +45,35 @@ def _get_role(msg) -> str | None:
     return msg.get("role") if hasattr(msg, "get") else getattr(msg, "role", None)
 
 
+def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, Mapping):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _lineage_key(value: Any) -> str | None:
+    if value is None:
+        return None
+    key = str(value)
+    return key or None
+
+
+def _step_lineage_keys(step: Any) -> set[str]:
+    keys: set[str] = set()
+
+    extras = _get_value(step, "extras")
+    if isinstance(extras, Mapping):
+        key = _lineage_key(extras.get("member_id"))
+        if key is not None:
+            keys.add(key)
+
+    key = _lineage_key(_get_value(step, "trajectory_id"))
+    if key is not None:
+        keys.add(key)
+
+    return keys
+
+
 def _is_valid_env_tail(messages: list) -> bool:
     """Validate that messages follow env response patterns:
     all tool messages, with optionally a single user message last."""
@@ -104,6 +133,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         sampling_args = normalize_sampling_args(sampling_args)
         state = cast(State, kwargs.pop("state"))
         extra_headers = kwargs.pop("extra_headers", None)
+        lineage_key = kwargs.pop("lineage_key", None)
+        prefix_candidate_indices = kwargs.pop("prefix_candidate_indices", None)
         # Use standard /chat/completions for: (1) first turn (no prior tokens
         # to stitch), or (2) conversations that contain multimodal content in
         # any turn.  vLLM ≤0.16's /tokenize doesn't run the multimodal
@@ -130,17 +161,28 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             "chat_template_kwargs", {}
         )
         prompt_ids = await self.get_prompt_ids(
-            state, prompt, tools, chat_template_kwargs=chat_template_kwargs
+            state,
+            prompt,
+            tools,
+            chat_template_kwargs=chat_template_kwargs,
+            lineage_key=lineage_key,
+            prefix_candidate_indices=prefix_candidate_indices,
         )
         if prompt_ids is None:
             # Reaching this branch means we have a non-empty trajectory but
             # could not stitch — surface it loudly so ops catches regressions.
+            self._increment_state_metric(
+                state, "client/openai_chat_completions_token_tito_miss"
+            )
             self.logger.warning(
                 f"TITO fell back to MITO on turn {len(state['trajectory']) + 1}"
             )
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
+        self._increment_state_metric(
+            state, "client/openai_chat_completions_token_tito_hit"
+        )
 
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(
@@ -165,6 +207,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
         chat_template_kwargs: dict | None = None,
+        lineage_key: str | None = None,
+        prefix_candidate_indices: tuple[int, ...] | None = None,
     ) -> list[int] | None:
         """
         Build prompt_ids for the next turn by stitching engine tokens with
@@ -204,7 +248,24 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             normalized_prompt_messages = normalize_for_comparison(prompt_messages)
             best_prefix_len = -1
             best_step = None
-            for step in reversed(state["trajectory"]):
+            trajectory = state["trajectory"]
+            if prefix_candidate_indices is None:
+                candidate_steps = reversed(list(trajectory))
+            else:
+                candidate_steps = (
+                    trajectory[idx]
+                    for idx in reversed(prefix_candidate_indices)
+                    if isinstance(idx, int) and 0 <= idx < len(trajectory)
+                )
+            stream_key = _lineage_key(lineage_key)
+            if stream_key is None:
+                stream_key = _lineage_key(state.get("trajectory_id"))
+
+            for step in candidate_steps:
+                if stream_key is not None and stream_key not in _step_lineage_keys(
+                    step
+                ):
+                    continue
                 step_tokens = step["tokens"]
                 if step_tokens is None:
                     continue

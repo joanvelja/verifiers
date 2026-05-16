@@ -545,6 +545,9 @@ class Environment(ABC):
             sampling_args=sampling_args,
             state=state,
             lineage_key=request_context.lineage_key if request_context else None,
+            prefix_candidate_indices=(
+                request_context.prefix_candidate_indices if request_context else None
+            ),
         )
         tracker = (
             request_context.usage_tracker

@@ -129,6 +129,19 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
                 headers[header_name] = str(val)
         return headers or None
 
+    def _increment_state_metric(self, state, key: str, value: float = 1.0) -> None:
+        """Increment a rollout metric when a client has useful diagnostics."""
+        if not state:
+            return
+        metrics = state.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+            state["metrics"] = metrics
+        previous = metrics.get(key, 0.0)
+        if not isinstance(previous, (int, float)):
+            previous = 0.0
+        metrics[key] = float(previous) + value
+
     async def get_response(
         self,
         prompt: Messages,
