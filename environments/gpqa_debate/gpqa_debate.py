@@ -5,7 +5,10 @@ import random
 from datasets import Dataset, load_dataset
 
 import verifiers as vf
-from verifiers.envs.debate_env import DebateEnv, load_environment as load_debate_env
+from verifiers.protocols.debate.env import (
+    DebateEnv,
+    load_environment as load_debate_env,
+)
 
 LETTERS = ("A", "B", "C", "D")
 

@@ -14,8 +14,8 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.debate.fields import EnumScoring, FieldSpec, classify_enum
-from verifiers.envs.debate.prompts import (
+from verifiers.protocols.debate.fields import EnumScoring, FieldSpec, classify_enum
+from verifiers.protocols.debate.prompts import (
     DebatePrompts,
 )
 from verifiers.parsers.parser import Parser

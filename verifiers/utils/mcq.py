@@ -1,7 +1,7 @@
 """MCQ answer normalization.
 
-Callers pass already-parsed (post-``parse_channels``) text. No think-tag
-handling lives here.
+Callers pass already-parsed public-channel text. No think-tag handling lives
+here.
 """
 
 import re

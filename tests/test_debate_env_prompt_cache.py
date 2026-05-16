@@ -4,14 +4,15 @@ import jinja2
 import jinja2.sandbox
 import pytest
 
-from verifiers.envs.debate.prompts import DebatePrompts
-from verifiers.envs.debate_env import DebateEnv
+from verifiers.protocols.debate.prompts import DebatePrompts
+from verifiers.protocols.debate.env import DebateEnv
 from verifiers.envs.multi_agent_kernel import (
     KernelState,
     StaticSchedule,
     TurnSlot,
     apply_action,
 )
+from verifiers.protocols.debate.channels import parse_channels
 from verifiers.types import State, UserMessage
 
 
@@ -97,7 +98,7 @@ def _state_with_transcript(*actions: tuple[str, str]) -> State:
             member_id,
             content,
             token_count=1,
-            think_tag="thinking",
+            channels=parse_channels(content, "thinking"),
         )
         kernel = result.new_state
 
@@ -151,7 +152,7 @@ async def test_debate_prompt_body_cache_renders_only_new_transcript_suffix() -> 
         "debater_a",
         "critique A",
         token_count=1,
-        think_tag="thinking",
+        channels=parse_channels("critique A", "thinking"),
     )
     state["_kernel"] = result.new_state
 

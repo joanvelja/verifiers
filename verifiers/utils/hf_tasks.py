@@ -11,7 +11,7 @@ from datasets import Dataset, DatasetDict, IterableDataset, load_dataset
 
 import verifiers as vf
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
-from verifiers.envs.debate.prompts import build_context, resolve_prompts
+from verifiers.protocols.debate.prompts import build_context, resolve_prompts
 from verifiers.parsers.xml_parser import XMLParser
 from verifiers.rubrics.judge_rubric import JudgeRubric
 from verifiers.rubrics.rubric import Rubric
@@ -227,8 +227,12 @@ def normalize_hf_dataset(
             f"example_id_key {example_id_key!r} not in columns {dataset.column_names}"
         )
 
+    answer_column = "__vf_normalized_answer"
+    while answer_column in dataset.column_names:
+        answer_column = f"_{answer_column}"
+
     def normalize(row: dict[str, Any], row_index: int) -> dict[str, Any]:
-        return normalize_hf_row(
+        normalized = normalize_hf_row(
             row,
             row_index=row_index,
             task_type=task_type,
@@ -249,12 +253,15 @@ def normalize_hf_dataset(
             shuffle_choices=shuffle_choices,
             rng=random.Random(seed + row_index),
         )
+        normalized[answer_column] = normalized.pop("answer")
+        return normalized
 
-    return dataset.map(
+    normalized_dataset = dataset.map(
         normalize,
         with_indices=True,
         remove_columns=dataset.column_names,
     )
+    return normalized_dataset.rename_column(answer_column, "answer")
 
 
 def normalize_hf_row(

@@ -1,11 +1,11 @@
-"""Seam tests for the real JudgeRubric class.
+"""Integration tests for the real JudgeRubric class.
 
-These tests live in the fork's own test suite (not the orchestrator's
-test_debate_env.py) so they import and exercise the production
-JudgeRubric class — the orchestrator test file stubs
+These tests live in the fork's own test suite (not the debate protocol tests)
+so they import and exercise the production JudgeRubric class. Older
+orchestrator-side tests stubbed
 ``verifiers.rubrics.judge_rubric`` with a minimal ``_StubJudgeRubric``
 mirror to avoid pulling httpx/openai transitively, which means
-composition-level tests there can only assert on the stub contract.
+composition-level tests there could only assert on the stub contract.
 This file closes that gap by loading the real module, which is
 importable in the fork's own venv.
 

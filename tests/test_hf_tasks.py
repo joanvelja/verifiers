@@ -7,7 +7,7 @@ import random
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from datasets import Dataset
+from datasets import ClassLabel, Dataset, Features, Sequence as HFSequence, Value
 
 import verifiers as vf
 from environments.hf_debate.hf_debate import load_environment as load_hf_debate
@@ -88,6 +88,37 @@ def test_normalize_mcq_shuffle_preserves_letter_answer() -> None:
     )
 
     info = json.loads(dataset[0]["info"])
+    assert info["answer_text"] == "right"
+
+
+def test_normalize_mcq_classlabel_answer_stays_letter() -> None:
+    raw = Dataset.from_list(
+        [
+            {
+                "question": "Pick the right option.",
+                "choices": ["wrong", "right", "also wrong", "wrong again"],
+                "answer": 1,
+            }
+        ],
+        features=Features(
+            {
+                "question": Value("string"),
+                "choices": HFSequence(Value("string")),
+                "answer": ClassLabel(names=["A", "B", "C", "D"]),
+            }
+        ),
+    )
+
+    dataset = normalize_hf_dataset(
+        raw,
+        task_type="mcq",
+        choices_key="choices",
+        answer_format="index",
+    )
+
+    assert dataset[0]["answer"] == "B"
+    info = json.loads(dataset[0]["info"])
+    assert info["answer_label"] == "B"
     assert info["answer_text"] == "right"
 
 

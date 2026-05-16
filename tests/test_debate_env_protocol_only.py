@@ -6,8 +6,8 @@ import jinja2
 import jinja2.sandbox
 import pytest
 
-from verifiers.envs.debate.prompts import DebatePrompts
-from verifiers.envs.debate_env import DebateEnv
+from verifiers.protocols.debate.prompts import DebatePrompts
+from verifiers.protocols.debate.env import DebateEnv
 from verifiers.envs.multi_agent_kernel import StaticSchedule, TurnSlot
 
 

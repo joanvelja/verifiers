@@ -20,7 +20,6 @@ shape that warrants a sibling of MultiTurnEnv, not a subclass.
 
 import asyncio
 import logging
-import re
 import time
 from abc import abstractmethod
 from typing import Any, Literal, final
@@ -28,6 +27,7 @@ from typing import Any, Literal, final
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.envs.multi_agent_kernel import (
+    ContentChannels,
     KernelState,
     SlotProgram,
     TurnSlot,
@@ -86,7 +86,6 @@ class MultiAgentEnv(vf.Environment):
         *,
         schedule: SlotProgram,
         members: list[str],
-        think_tag: str = "thinking",
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -96,7 +95,6 @@ class MultiAgentEnv(vf.Environment):
             raise ValueError(f"MultiAgentEnv.members contains duplicates: {members}")
         self.schedule: SlotProgram = schedule
         self.members: list[str] = list(members)
-        self.think_tag = think_tag
 
     # -- abstract: subclass must implement -----------------------------------
 
@@ -132,6 +130,18 @@ class MultiAgentEnv(vf.Environment):
         if utt.member_id == viewer_id:
             return "full"
         return "public_only"
+
+    def split_response_channels(
+        self, response: Response, member_id: str, slot: TurnSlot
+    ) -> tuple[str, ContentChannels]:
+        """Turn a raw provider response into protocol channels.
+
+        Core multi-agent has no private-channel syntax. Protocol subclasses
+        such as debate can override this to strip XML, merge provider reasoning,
+        or quarantine malformed text before the kernel commits it.
+        """
+        raw = _coerce_text_content(response.message.content)
+        return raw, ContentChannels(public=raw.strip())
 
     # -- prompt preparation --------------------------------------------------
 
@@ -273,8 +283,7 @@ class MultiAgentEnv(vf.Environment):
                 ),
             ),
         )
-        content = _coerce_text_content(response.message.content)
-        content = _enrich_with_provider_reasoning(content, response, self.think_tag)
+        content, channels = self.split_response_channels(response, agent, slot)
         token_count = _completion_token_count(response)
 
         result = apply_action(
@@ -283,7 +292,7 @@ class MultiAgentEnv(vf.Environment):
             agent,
             content,
             token_count,
-            think_tag=self.think_tag,
+            channels,
         )
         state["_kernel"] = result.new_state
         utt = result.committed[0]
@@ -425,8 +434,7 @@ class MultiAgentEnv(vf.Environment):
         staged_steps: list[TrajectoryStep] = []
         committed_utts: list[Utterance] = []
         for agent, response in zip(slot.agents, responses):
-            content = _coerce_text_content(response.message.content)
-            content = _enrich_with_provider_reasoning(content, response, self.think_tag)
+            content, channels = self.split_response_channels(response, agent, slot)
             token_count = _completion_token_count(response)
             result = apply_action(
                 staged_kernel,
@@ -434,7 +442,7 @@ class MultiAgentEnv(vf.Environment):
                 agent,
                 content,
                 token_count,
-                think_tag=self.think_tag,
+                channels,
             )
             staged_kernel = result.new_state
             if result.committed:
@@ -498,11 +506,6 @@ class MultiAgentEnv(vf.Environment):
         }
         if fields is not None:
             extras["fields"] = fields
-        # Per-step quarantine flag — kernel set this on the Utterance when
-        # parse_channels rejected the raw output. Propagating it here lets
-        # the trainer mask the malformed completion tokens (otherwise the
-        # raw garbage is trainable, which is the exact P0-2 the kernel
-        # quarantine was meant to prevent).
         if utt.parse_error is not None:
             extras["parse_error"] = utt.parse_error
         return TrajectoryStep(
@@ -528,11 +531,8 @@ def _coerce_text_content(content: Any) -> str:
     """Coerce ``response.message.content`` to a string for the kernel.
 
     Provider returns either ``str`` or ``list[ContentPart]`` (multimodal).
-    The MA pipeline (parse_channels, raw_content storage, downstream
-    rendering) is text-only — joins TextContentPart text fields and
-    drops non-text parts. Most multi-agent debate tasks are text-only;
-    this helper exists so a stray multimodal response doesn't crash the
-    kernel without surfacing.
+    The MA pipeline stores text transcript entries. Text parts are joined and
+    non-text parts are dropped.
     """
     if content is None:
         return ""
@@ -551,63 +551,6 @@ def _coerce_text_content(content: Any) -> str:
                     text_parts.append(txt)
         return "".join(text_parts)
     return ""
-
-
-def _extract_provider_reasoning(response: Response) -> str | None:
-    """Flatten provider-emitted reasoning to a single string, or None.
-
-    OpenAI o-series surfaces ``reasoning_content`` (str). Anthropic
-    surfaces ``thinking_blocks`` (list of typed blocks; ``redacted``
-    blocks have no readable content). Concatenated with paragraph
-    breaks. Returns None when nothing reasoning-shaped is present.
-    """
-    msg = response.message
-    parts: list[str] = []
-
-    rc = getattr(msg, "reasoning_content", None)
-    if isinstance(rc, str) and rc.strip():
-        parts.append(rc.strip())
-
-    blocks = getattr(msg, "thinking_blocks", None) or []
-    for blk in blocks:
-        text = getattr(blk, "thinking", None) or (
-            blk.get("thinking") if isinstance(blk, dict) else None
-        )
-        if isinstance(text, str) and text.strip():
-            parts.append(text.strip())
-
-    return "\n\n".join(parts) if parts else None
-
-
-_NATIVE_THINK_PROBE = re.compile(r"<\s*(?:think|thinking)\s*>", re.IGNORECASE)
-
-
-def _enrich_with_provider_reasoning(
-    content: str, response: Response, think_tag: str
-) -> str:
-    """Wrap provider reasoning in ``<{think_tag}>...</{think_tag}>`` and
-    prepend to ``content`` so ``parse_channels`` can split it normally.
-
-    Single source of truth: kernel sees one ``raw_content`` string;
-    ``public_channel`` is what survives stripping; ``private_channel``
-    is what got stripped; "full" opponent view is the verbatim string.
-    No special channels-merge inside the kernel.
-
-    Skip enrichment when the model already emitted any think block
-    inline — adding a second would trip ``parse_channels``'s
-    one-block-per-whitelist contract and quarantine the utterance. If
-    a model surfaces reasoning BOTH inline AND via the structured
-    field we trust the inline channel as author-shaped intent.
-    """
-    pr = _extract_provider_reasoning(response)
-    if not pr:
-        return content
-    if (
-        _NATIVE_THINK_PROBE.search(content)
-        or f"<{think_tag}".lower() in content.lower()
-    ):
-        return content
-    return f"<{think_tag}>\n{pr}\n</{think_tag}>\n\n{content}"
 
 
 def _log_suppressed_peers(slot_id: int, exceptions: tuple[BaseException, ...]) -> None:

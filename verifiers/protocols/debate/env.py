@@ -15,25 +15,28 @@ inherited from :class:`MultiAgentEnv`.
 import logging
 from typing import Any
 
-from verifiers.envs.debate.parsing import extract_fields
-from verifiers.envs.debate.prompts import (
+from verifiers.protocols.debate.channels import merge_provider_reasoning, parse_channels
+from verifiers.protocols.debate.parsing import extract_fields
+from verifiers.protocols.debate.prompts import (
     DebatePrompts,
     build_context,
     resolve_prompts,
 )
 from verifiers.envs.multi_agent_kernel import (
+    ContentChannels,
     KernelState,
     SlotProgram,
     StaticSchedule,
     TurnSlot,
     Utterance,
 )
-from verifiers.envs.debate_rubric import question_from_state
+from verifiers.protocols.debate.rubric import question_from_state
 from verifiers.envs.multi_agent_env import MultiAgentEnv, VisibilityMode
 from verifiers.types import (
     AssistantMessage,
     Messages,
     Message,
+    Response,
     State,
     SystemMessage,
     UserMessage,
@@ -67,7 +70,6 @@ class DebateEnv(MultiAgentEnv):
         super().__init__(
             schedule=schedule,
             members=members,
-            think_tag=prompts.think_tag,
             **kwargs,
         )
 
@@ -258,6 +260,13 @@ class DebateEnv(MultiAgentEnv):
         if vis == "visible_to_judge" and viewer_id == "judge":
             return "full"
         return "public_only"
+
+    def split_response_channels(
+        self, response: Response, member_id: str, slot: TurnSlot
+    ) -> tuple[str, ContentChannels]:
+        raw, _ = super().split_response_channels(response, member_id, slot)
+        raw = merge_provider_reasoning(raw, response, self.prompts.think_tag)
+        return raw, parse_channels(raw, self.prompts.think_tag)
 
     # -- prompt construction -------------------------------------------------
 
@@ -537,7 +546,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
     or ``prompts`` (already-built DebatePrompts).
     Optional: judge_client, judge_model, dataset/eval_dataset.
     """
-    from verifiers.envs.debate_rubric import DebateRubric
+    from verifiers.protocols.debate.rubric import DebateRubric
 
     schedule = StaticSchedule(
         tuple(

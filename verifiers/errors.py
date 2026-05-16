@@ -83,10 +83,8 @@ class ContentParseError(KernelProtocolError):
     """Raised when model output violates the channel-markup contract
     (nested/unclosed/multiple ``<think>`` or configured private tag).
 
-    Distinct from kernel-state protocol violations: apply_action
-    quarantines these on the utterance (empty public_channel +
-    ``parse_error`` flag) rather than aborting the rollout, so a
-    single agent's formatting slip does not DoS the whole episode.
+    Protocol adapters should convert these into per-utterance
+    ``parse_error`` flags before committing to the multi-agent kernel.
     """
 
     pass
