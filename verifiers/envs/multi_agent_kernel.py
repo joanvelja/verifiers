@@ -93,6 +93,48 @@ class StaticSchedule:
         return len(self._slots)
 
 
+def causal_transcript_view(
+    transcript: tuple[Utterance, ...],
+    member_id: str,
+    *,
+    start: int = 0,
+) -> tuple[Utterance, ...]:
+    """Return committed utterances in the replay order seen by ``member_id``.
+
+    The kernel stores one archival transcript: sequential commits in schedule
+    order, and simultaneous commits as a contiguous slot group in canonical
+    slot-agent order. For prompt replay, a participant's own utterance from a
+    simultaneous barrier must appear before peer utterances from that same
+    barrier; those peer utterances were not visible when the participant spoke.
+
+    This is topology-only. Protocols still decide which channel contents are
+    visible to a viewer.
+    """
+    ordered: list[Utterance] = []
+    idx = start
+    while idx < len(transcript):
+        group = _next_slot_group(transcript, idx)
+        own = tuple(utt for utt in group if utt.member_id == member_id)
+        if own:
+            ordered.extend(own)
+            ordered.extend(utt for utt in group if utt.member_id != member_id)
+        else:
+            ordered.extend(group)
+        idx += len(group)
+    return tuple(ordered)
+
+
+def _next_slot_group(
+    transcript: tuple[Utterance, ...],
+    start: int,
+) -> tuple[Utterance, ...]:
+    slot_id = transcript[start].slot_id
+    end = start + 1
+    while end < len(transcript) and transcript[end].slot_id == slot_id:
+        end += 1
+    return transcript[start:end]
+
+
 def apply_action(
     state: KernelState,
     program: SlotProgram,

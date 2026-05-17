@@ -29,6 +29,7 @@ from verifiers.envs.multi_agent_kernel import (
     StaticSchedule,
     TurnSlot,
     Utterance,
+    causal_transcript_view,
 )
 from verifiers.protocols.debate.rubric import question_from_state
 from verifiers.envs.multi_agent_env import MultiAgentEnv, VisibilityMode
@@ -371,19 +372,17 @@ class DebateEnv(MultiAgentEnv):
             own_round = 0
             processed = 0
 
-        while processed < len(transcript):
-            group = self._next_slot_group(transcript, processed)
-            for utt in self._viewer_replay_order(group, member_id):
-                if utt.member_id == member_id:
-                    body.extend(
-                        self._render_own_turn(
-                            utt, member_id, own_round, num_rounds, question, state
-                        )
+        for utt in causal_transcript_view(transcript, member_id, start=processed):
+            if utt.member_id == member_id:
+                body.extend(
+                    self._render_own_turn(
+                        utt, member_id, own_round, num_rounds, question, state
                     )
-                    own_round += 1
-                else:
-                    body.append(self._render_opponent_message(utt, member_id))
-            processed += len(group)
+                )
+                own_round += 1
+            else:
+                body.append(self._render_opponent_message(utt, member_id))
+            processed += 1
 
         cache["processed"] = processed
         cache["own_round"] = own_round
@@ -392,28 +391,6 @@ class DebateEnv(MultiAgentEnv):
         return list(body), own_round
 
     # -- build_prompt helpers ------------------------------------------------
-
-    @staticmethod
-    def _next_slot_group(
-        transcript: tuple[Utterance, ...],
-        start: int,
-    ) -> tuple[Utterance, ...]:
-        slot_id = transcript[start].slot_id
-        end = start + 1
-        while end < len(transcript) and transcript[end].slot_id == slot_id:
-            end += 1
-        return transcript[start:end]
-
-    @staticmethod
-    def _viewer_replay_order(
-        group: tuple[Utterance, ...],
-        viewer_id: str,
-    ) -> tuple[Utterance, ...]:
-        own = tuple(utt for utt in group if utt.member_id == viewer_id)
-        if not own:
-            return group
-        others = tuple(utt for utt in group if utt.member_id != viewer_id)
-        return own + others
 
     def _build_prompt_context(
         self,
