@@ -56,7 +56,6 @@ prime env push --path ./environments/gpqa_debate --visibility=PRIVATE
 | `seed` | int | `0` | Choice-shuffling seed |
 | `schedule` | list | default 5-slot schedule | Override turn schedule as a list of `{slot_id, agents, phase}` dicts |
 | `truth_member` | str | `"debater_a"` | Member credited as the truth-tracking seat |
-| `judge_model` | str | `"gpt-5.4-nano"` | Model used by optional open-ended grader/matcher templates |
 
 ### Metrics
 | Metric | Meaning |

@@ -603,7 +603,7 @@ class RendererClient(
             cache_salt=args.get("cache_salt")
             or sampling_params.pop("cache_salt", None),
             priority=args.get("priority") or sampling_params.pop("priority", None),
-            extra_headers=args.get("extra_headers"),
+            extra_headers=kwargs.get("extra_headers"),
         )
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:

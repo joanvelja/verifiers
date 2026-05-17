@@ -29,7 +29,6 @@ def load_environment(
     seed: int = 0,
     schedule: list[dict] | None = None,
     truth_member: str = "debater_a",
-    judge_model: str = "gpt-5.4-nano",
 ) -> DebateEnv:
     def build_split(n: int, split_seed: int) -> Dataset:
         vf.ensure_keys(["HF_TOKEN"])
@@ -81,7 +80,6 @@ def load_environment(
         members=["debater_a", "debater_b", "judge"],
         truth_member=truth_member,
         prompts_ref=prompts_ref,
-        judge_model=judge_model,
         dataset=build_dataset,
         eval_dataset=build_eval_dataset,
     )
