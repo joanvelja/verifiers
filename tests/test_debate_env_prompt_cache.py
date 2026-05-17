@@ -13,7 +13,7 @@ from verifiers.envs.multi_agent_kernel import (
     apply_action,
 )
 from verifiers.protocols.debate.channels import parse_channels
-from verifiers.types import State, UserMessage
+from verifiers.types import AssistantMessage, State, UserMessage
 
 
 _JINJA = jinja2.sandbox.SandboxedEnvironment(undefined=jinja2.StrictUndefined)
@@ -25,6 +25,21 @@ _SCHEDULE = StaticSchedule(
         TurnSlot(slot_id=2, agents=("debater_a",), phase="critique"),
         TurnSlot(slot_id=3, agents=("debater_b",), phase="critique"),
         TurnSlot(slot_id=4, agents=("judge",), phase="final"),
+    )
+)
+_SIMULTANEOUS_SCHEDULE = StaticSchedule(
+    (
+        TurnSlot(
+            slot_id=0,
+            agents=("debater_a", "debater_b"),
+            phase="propose",
+        ),
+        TurnSlot(
+            slot_id=1,
+            agents=("debater_a", "debater_b"),
+            phase="critique",
+        ),
+        TurnSlot(slot_id=2, agents=("judge",), phase="final"),
     )
 )
 
@@ -69,9 +84,9 @@ def _rubric():
 
 
 class CountingDebateEnv(DebateEnv):
-    def __init__(self) -> None:
+    def __init__(self, schedule: StaticSchedule = _SCHEDULE) -> None:
         super().__init__(
-            schedule=_SCHEDULE,
+            schedule=schedule,
             prompts=_prompts(),
             members=list(_MEMBERS),
             rubric=_rubric(),
@@ -111,6 +126,64 @@ def _state_with_transcript(*actions: tuple[str, str]) -> State:
 
 def _dump(messages):
     return [message.model_dump() for message in messages]
+
+
+def _base_state() -> State:
+    state = State()
+    state["prompt"] = [UserMessage(content="Which option is correct?")]
+    state["answer"] = "A"
+    state["_kernel"] = KernelState(slot_index=0)
+    return state
+
+
+def _apply(
+    kernel: KernelState,
+    schedule: StaticSchedule,
+    member_id: str,
+    content: str,
+) -> KernelState:
+    result = apply_action(
+        kernel,
+        schedule,
+        member_id,
+        content,
+        token_count=1,
+        channels=parse_channels(content, "thinking"),
+    )
+    return result.new_state
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_replay_preserves_member_actual_io_prefix() -> None:
+    env = CountingDebateEnv(_SIMULTANEOUS_SCHEDULE)
+    state = _base_state()
+    propose_slot = _SIMULTANEOUS_SCHEDULE.current_slot(state["_kernel"])
+    assert propose_slot is not None
+
+    original_b_prompt = await env._prepare_prompt(state, "debater_b", propose_slot)
+    state["_kernel"] = _apply(
+        state["_kernel"],
+        _SIMULTANEOUS_SCHEDULE,
+        "debater_a",
+        "opening A",
+    )
+    state["_kernel"] = _apply(
+        state["_kernel"],
+        _SIMULTANEOUS_SCHEDULE,
+        "debater_b",
+        "opening B",
+    )
+
+    critique_slot = _SIMULTANEOUS_SCHEDULE.current_slot(state["_kernel"])
+    assert critique_slot is not None
+    critique_prompt = await env._prepare_prompt(state, "debater_b", critique_slot)
+    expected_prefix = [
+        *original_b_prompt,
+        AssistantMessage(content="opening B"),
+    ]
+
+    assert _dump(critique_prompt[: len(expected_prefix)]) == _dump(expected_prefix)
+    assert "[debater_a] opening A" in critique_prompt[len(expected_prefix)].content
 
 
 @pytest.mark.asyncio
