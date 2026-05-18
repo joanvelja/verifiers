@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from verifiers.envs.debate import resolve_prompts
-from verifiers.envs.debate_rubric import DebateRubric
+from verifiers.protocols.debate import resolve_prompts
+from verifiers.protocols.debate.rubric import DebateRubric
 
 
 @pytest.fixture

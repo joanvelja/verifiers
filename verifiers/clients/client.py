@@ -1,5 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from anthropic import (
@@ -35,6 +36,8 @@ AUTH_ERRORS: tuple[type[Exception], ...] = (
     AnthropicAuthenticationError,
     AnthropicPermissionDeniedError,
 )
+
+VERIFIERS_MEMBER_HEADER = "X-Verifiers-Member-ID"
 
 
 class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
@@ -118,16 +121,50 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
             native_tools.append(await self.to_native_tool(tool))
         return native_tools
 
+    @staticmethod
+    def _get_state_path(state, path: str):
+        current = state
+        for part in path.split("."):
+            if isinstance(current, Mapping):
+                current = current.get(part)
+            else:
+                current = getattr(current, part, None)
+            if current is None:
+                return None
+        return current
+
     def _build_state_headers(self, state) -> dict[str, str] | None:
         """Build per-request HTTP headers from state using extra_headers_from_state mapping."""
         if not self._config or not self._config.extra_headers_from_state or not state:
             return None
         headers = {}
         for header_name, state_key in self._config.extra_headers_from_state.items():
-            val = state.get(state_key)
+            val = self._get_state_path(state, state_key)
             if val is not None:
                 headers[header_name] = str(val)
         return headers or None
+
+    def _build_request_headers(self, kwargs: dict) -> dict[str, str] | None:
+        headers = self._build_state_headers(kwargs.get("state")) or {}
+        caller_headers = kwargs.get("extra_headers") or {}
+        headers.update(caller_headers)
+        member_id = kwargs.get("member_id")
+        if member_id is not None:
+            headers[VERIFIERS_MEMBER_HEADER] = str(member_id)
+        return headers or None
+
+    def _increment_state_metric(self, state, key: str, value: float = 1.0) -> None:
+        """Increment a rollout metric when a client has useful diagnostics."""
+        if not state:
+            return
+        metrics = state.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+            state["metrics"] = metrics
+        previous = metrics.get(key, 0.0)
+        if not isinstance(previous, (int, float)):
+            previous = 0.0
+        metrics[key] = float(previous) + value
 
     async def get_response(
         self,
@@ -139,7 +176,7 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
     ) -> Response:
         """Get the response from the client."""
         try:
-            extra_headers = self._build_state_headers(kwargs.get("state"))
+            extra_headers = self._build_request_headers(kwargs)
             if extra_headers:
                 kwargs["extra_headers"] = extra_headers
 

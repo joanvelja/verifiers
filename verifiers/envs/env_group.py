@@ -6,6 +6,8 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import (
     ClientConfig,
+    GenerationPlan,
+    MemberGenerationPlan,
     Messages,
     RolloutInput,
     SamplingArgs,
@@ -317,6 +319,7 @@ class EnvGroup(vf.Environment):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        generation: MemberGenerationPlan | None = None,
     ) -> vf.RolloutOutput:
         target_env_client = env_client or self.env_client
         if target_env_client is not None:
@@ -331,6 +334,7 @@ class EnvGroup(vf.Environment):
                 sampling_args,
                 max_retries,
                 state_columns,
+                generation,
             )
 
         env_name, child_input, route = self._route_child_input(input)
@@ -343,6 +347,7 @@ class EnvGroup(vf.Environment):
             max_retries,
             state_columns,
             env.env_client,
+            generation,
         )
         return _set_info_route(output, route)  # type: ignore[return-value]
 
@@ -356,6 +361,7 @@ class EnvGroup(vf.Environment):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        generation: GenerationPlan | None = None,
     ) -> list[vf.RolloutOutput]:
         target_env_client = env_client or self.env_client
         if target_env_client is not None:
@@ -370,6 +376,7 @@ class EnvGroup(vf.Environment):
                 sampling_args,
                 max_retries,
                 state_columns,
+                generation,
             )
 
         env_name, first_child_input, route = self._route_child_input(group_inputs[0])
@@ -396,6 +403,7 @@ class EnvGroup(vf.Environment):
             max_retries,
             state_columns,
             env.env_client,
+            generation,
         )
         return [_set_info_route(output, route) for output in outputs]  # type: ignore[return-value]
 
@@ -406,6 +414,7 @@ class EnvGroup(vf.Environment):
         client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        generation: MemberGenerationPlan | None = None,
     ) -> vf.State:
         env_name, child_input, route = self._route_child_input(input)
         env = self.get_env_for_name(env_name)

@@ -1,21 +1,28 @@
-"""Debate rubric: ±1 zero-sum reward from judge outcome + diagnostic metrics.
+"""Debate rubric: ±1 zero-sum member reward + diagnostic metrics.
 
-Reward (single source of training signal):
+Member reward (single source of training signal):
     winner member → +1, loser member → −1, judge → 0, no decision → 0.
+
+Episode scalar:
+    inert (0.0) unless a pack explicitly declares ``truth_member``. When
+    declared, the scalar is 1 iff the judge picked that member. Symmetric
+    debate packs should leave ``truth_member=None`` so ground truth stays
+    diagnostic-only.
 
 Diagnostics (weight-0 telemetry; never feed reward):
     per-member: turns, parse_error_count, num_commits, num_unique_commits,
                 accuracy, extraction_failed, initial_correct, final_correct
-    episode:    agreement, truth_member_correct (judge-less packs only),
-                episode_scalar (1 iff judge picked truth_member), winner
+    episode:    agreement, any_debater_correct, all_debaters_correct,
+                judge_selected_correct, truth_member_correct, truth_member_won,
+                winner
 """
 
 from typing import Any
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.envs.debate.fields import EnumScoring, FieldSpec, classify_enum
-from verifiers.envs.debate.prompts import (
+from verifiers.protocols.debate.fields import EnumScoring, FieldSpec, classify_enum
+from verifiers.protocols.debate.prompts import (
     DebatePrompts,
 )
 from verifiers.parsers.parser import Parser
@@ -82,6 +89,18 @@ def zero_sum_reward(member_id: str, winner: str | None) -> float:
     return 1.0 if member_id == winner else -1.0
 
 
+def episode_scalar_from_winner(winner: str | None, truth_member: str | None) -> float:
+    """Top-level scalar for legacy single-score consumers.
+
+    Symmetric debate has no truth side, so the scalar is deliberately inert.
+    Ground-truth correctness is emitted as diagnostics instead of becoming a
+    rollout-level reward that orchestration code can threshold on.
+    """
+    if truth_member is None:
+        return 0.0
+    return 1.0 if winner == truth_member else 0.0
+
+
 def member_snapshot(
     member_id: str,
     steps: list[TrajectoryStep],
@@ -131,11 +150,9 @@ def maybe_judge(
     client: Client | None,
     model: str,
 ) -> JudgeRubric | None:
-    """Build a JudgeRubric iff the pack declares the template AND a client
-    is available. Otherwise return None — score-time callers raise
-    ``vf.Error`` if they actually need the missing piece."""
+    """Build a JudgeRubric iff the pack declares the template."""
     tmpl = prompts.judges.get(kind)
-    if tmpl is None or client is None:
+    if tmpl is None:
         return None
     return JudgeRubric(
         parser=Parser(),
@@ -175,14 +192,20 @@ class DebateRubric(MultiAgentRubric):
 
     def __init__(
         self,
-        truth_member: str,
         members: list[str],
         prompts: DebatePrompts,
         judge_client: Client | None = None,
         judge_model: str = "gpt-4.1-nano",
+        truth_member: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(members=members, **kwargs)
+        if truth_member is not None and truth_member not in self.members:
+            raise ValueError(
+                f"truth_member={truth_member!r} is not in members={self.members!r}"
+            )
+        if truth_member == "judge":
+            raise ValueError("truth_member cannot be 'judge'")
         self.truth_member = truth_member
         self.prompts = prompts
         self.grader = maybe_judge(prompts, "grader", judge_client, judge_model)
@@ -255,7 +278,7 @@ class DebateRubric(MultiAgentRubric):
 
         return MARScore(
             members=members,
-            episode_scalar=1.0 if winner == self.truth_member else 0.0,
+            episode_scalar=episode_scalar_from_winner(winner, self.truth_member),
             episode_metrics=episode_metrics,
             episode_categorical=episode_categorical,
         )
@@ -315,11 +338,14 @@ class DebateRubric(MultiAgentRubric):
         Episode phase (``episode_metrics``):
           * ``agreement``: matcher verdict on the two debaters' final
             answers; present only when both have committed.
-          * ``truth_member_correct``: judge-less test packs only; grades
-            the truth-side debater's final answer vs ground truth.
+          * correctness metrics: diagnostic-only ground-truth telemetry.
+            They never feed member rewards. ``truth_member_*`` metrics are
+            present only when the pack explicitly declares a truth side.
         """
         per_member: dict[str, dict[str, float]] = {}
         episode: dict[str, float] = {}
+        answer_members: list[str] = []
+        final_correct_by_member: dict[str, float] = {}
 
         for mid in self.members:
             m = snaps[mid]
@@ -327,13 +353,17 @@ class DebateRubric(MultiAgentRubric):
             per_member[mid] = dst
             if mid == "judge":
                 continue
+            declares_answer = self.member_declares_answer.get(mid, False)
+            if declares_answer:
+                answer_members.append(mid)
             seq = m["commits"]
             dst["num_commits"] = float(len(seq))
             dst["num_unique_commits"] = float(len(set(seq)))
             dst["flipped"] = 1.0 if len(seq) >= 2 and seq[0] != seq[-1] else 0.0
-            if not target or not self.member_declares_answer.get(mid, False):
+            if not target or not declares_answer:
                 continue
             if not m["latest_had_answer"]:
+                final_correct_by_member[mid] = 0.0
                 if m["turns"]:
                     dst["extraction_failed"] = 1.0
                 continue
@@ -343,6 +373,7 @@ class DebateRubric(MultiAgentRubric):
             )
             dst["accuracy"] = final
             dst["final_correct"] = final
+            final_correct_by_member[mid] = final
             dst["extraction_failed"] = 0.0
             dst["initial_correct"] = (
                 final
@@ -351,6 +382,28 @@ class DebateRubric(MultiAgentRubric):
                     await self.verdict(seq[0], target, question, spec, "grader", state)
                 )
             )
+
+        if answer_members:
+            correctness = [
+                final_correct_by_member.get(mid, 0.0) for mid in answer_members
+            ]
+            any_correct = any(value == 1.0 for value in correctness)
+            episode["any_debater_correct"] = float(any_correct)
+            episode["all_debaters_correct"] = float(
+                bool(correctness) and all(value == 1.0 for value in correctness)
+            )
+            if winner in answer_members:
+                selected_correct = final_correct_by_member.get(winner, 0.0)
+                episode["judge_selected_correct"] = selected_correct
+                if any_correct:
+                    episode["judge_selected_correct_given_any_correct"] = (
+                        selected_correct
+                    )
+            if self.truth_member in answer_members:
+                episode["truth_member_correct"] = final_correct_by_member.get(
+                    self.truth_member, 0.0
+                )
+                episode["truth_member_won"] = float(winner == self.truth_member)
 
         debaters = [
             (mid, m)
@@ -365,20 +418,6 @@ class DebateRubric(MultiAgentRubric):
                     b["commits"][-1], a["commits"][-1], question, spec, "matcher", state
                 )
             )
-
-        if winner is None and "judge" not in self.prompts.fields and target:
-            truth = snaps.get(self.truth_member)
-            if truth is not None and truth["latest_had_answer"]:
-                episode["truth_member_correct"] = float(
-                    await self.verdict(
-                        truth["commits"][-1],
-                        target,
-                        question,
-                        truth["latest_spec"],
-                        "grader",
-                        state,
-                    )
-                )
 
         return per_member, episode
 
@@ -401,7 +440,7 @@ class DebateRubric(MultiAgentRubric):
         judge = self.grader if kind == "grader" else self.matcher
         if judge is None:
             raise vf.Error(
-                f"Open-ended {kind} needs a judge_client; "
+                f"Open-ended {kind} needs a judge template; "
                 f"pack={self.prompts.source_ref!r}"
             )
         raw = await judge.judge(

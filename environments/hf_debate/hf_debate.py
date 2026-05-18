@@ -4,9 +4,9 @@ from typing import Sequence
 from datasets import Dataset, IterableDataset
 
 import verifiers as vf
-from verifiers.envs.debate.fields import EnumScoring
-from verifiers.envs.debate_env import load_environment as load_debate_environment
-from verifiers.envs.debate.prompts import resolve_prompts
+from verifiers.protocols.debate.fields import EnumScoring
+from verifiers.protocols.debate.env import load_environment as load_debate_environment
+from verifiers.protocols.debate.prompts import resolve_prompts
 from verifiers.utils.hf_tasks import (
     AnswerFormat,
     TaskType,
@@ -50,7 +50,7 @@ def load_environment(
     num_eval_examples: int = -1,
     schedule: list[vf.ConfigData] | None = None,
     prompts_ref: str | None = None,
-    truth_member: str = "debater_a",
+    truth_member: str | None = None,
     judge_model: str = "gpt-5.4-nano",
     **extra: object,
 ) -> vf.Environment:

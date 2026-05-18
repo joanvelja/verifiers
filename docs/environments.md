@@ -724,6 +724,7 @@ build-backend = "hatchling.build"
 include = ["my_env.py", "pyproject.toml"]
 
 [tool.verifiers.eval]
+api_client_type = "renderer"
 num_examples = 20
 rollouts_per_example = 5
 ```
@@ -733,7 +734,7 @@ Key `pyproject.toml` sections:
 - **`[project]`** — Package name (used by `prime env install` and `prime eval run`), description, version, and dependencies. The `tags` field is optional metadata for categorizing environments.
 - **`[build-system]`** — Hatchling is used as the build backend for the Environments Hub.
 - **`[tool.hatch.build]`** — Lists files to include in the package. Always include `pyproject.toml` alongside your environment file to ensure that environment metadata is available when the environment is installed. Add any additional source files here.
-- **`[tool.verifiers.eval]`** — Default parameters for `prime eval run` when flags aren't provided.
+- **`[tool.verifiers.eval]`** — Default parameters for `prime eval run` when flags aren't provided, including `api_client_type`, `num_examples`, `rollouts_per_example`, `max_tokens`, and `temperature`.
 
 ### Managing Dependencies
 

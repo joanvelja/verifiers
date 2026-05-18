@@ -9,8 +9,6 @@ from .fields import FieldSpec
 
 _log = logging.getLogger(__name__)
 
-_XML_TAG_RE = re.compile(r"<(\w+)>(.*?)</\1>", re.DOTALL)
-
 
 def _coerce_bool(v: str) -> bool | None:
     normed = v.strip().lower()
@@ -43,20 +41,23 @@ def _coerce(value: str, target_type: type) -> Any:
 
 
 def parse(text: str, schema: dict[str, type]) -> dict[str, Any] | None:
-    xml_matches = _XML_TAG_RE.findall(text)
-    if not xml_matches:
-        return None
     result: dict[str, Any] = {}
-    seen: set[str] = set()
-    for tag, content in xml_matches:
-        if tag not in schema:
+    for tag, target_type in schema.items():
+        tag_re = re.compile(
+            rf"<\s*{re.escape(tag)}(?=\s|>)[^>]*>(.*?)</\s*{re.escape(tag)}\s*>",
+            re.DOTALL,
+        )
+        matches = tag_re.findall(text)
+        if not matches:
             continue
-        if tag in seen:
-            raise ValueError(
-                f"Duplicate XML tag '{tag}' in response — ambiguous commit"
-            )
-        seen.add(tag)
-        coerced = _coerce(content.strip(), schema[tag])
+        coerced_values = [_coerce(content.strip(), target_type) for content in matches]
+        if len(matches) > 1:
+            first = coerced_values[0]
+            if first is None or any(value != first for value in coerced_values[1:]):
+                raise ValueError(
+                    f"Duplicate XML tag '{tag}' in response — ambiguous commit"
+                )
+        coerced = coerced_values[0]
         if coerced is not None:
             result[tag] = coerced
     return result or None

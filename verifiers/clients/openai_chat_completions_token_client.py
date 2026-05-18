@@ -45,6 +45,35 @@ def _get_role(msg) -> str | None:
     return msg.get("role") if hasattr(msg, "get") else getattr(msg, "role", None)
 
 
+def _get_value(obj: Any, key: str, default: Any = None) -> Any:
+    if isinstance(obj, Mapping):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _member_id(value: Any) -> str | None:
+    if value is None:
+        return None
+    key = str(value)
+    return key or None
+
+
+def _step_member_ids(step: Any) -> set[str]:
+    keys: set[str] = set()
+
+    extras = _get_value(step, "extras")
+    if isinstance(extras, Mapping):
+        key = _member_id(extras.get("member_id"))
+        if key is not None:
+            keys.add(key)
+
+    key = _member_id(_get_value(step, "trajectory_id"))
+    if key is not None:
+        keys.add(key)
+
+    return keys
+
+
 def _is_valid_env_tail(messages: list) -> bool:
     """Validate that messages follow env response patterns:
     all tool messages, with optionally a single user message last."""
@@ -104,6 +133,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         sampling_args = normalize_sampling_args(sampling_args)
         state = cast(State, kwargs.pop("state"))
         extra_headers = kwargs.pop("extra_headers", None)
+        member_id = kwargs.pop("member_id", None)
+        prefix_candidate_indices = kwargs.pop("prefix_candidate_indices", None)
         # Use standard /chat/completions for: (1) first turn (no prior tokens
         # to stitch), or (2) conversations that contain multimodal content in
         # any turn.  vLLM ≤0.16's /tokenize doesn't run the multimodal
@@ -130,17 +161,29 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             "chat_template_kwargs", {}
         )
         prompt_ids = await self.get_prompt_ids(
-            state, prompt, tools, chat_template_kwargs=chat_template_kwargs
+            state,
+            prompt,
+            tools,
+            chat_template_kwargs=chat_template_kwargs,
+            member_id=member_id,
+            prefix_candidate_indices=prefix_candidate_indices,
+            model=model,
         )
         if prompt_ids is None:
             # Reaching this branch means we have a non-empty trajectory but
             # could not stitch — surface it loudly so ops catches regressions.
+            self._increment_state_metric(
+                state, "client/openai_chat_completions_token_tito_miss"
+            )
             self.logger.warning(
                 f"TITO fell back to MITO on turn {len(state['trajectory']) + 1}"
             )
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
+        self._increment_state_metric(
+            state, "client/openai_chat_completions_token_tito_hit"
+        )
 
         extra_body = sampling_args.pop("extra_body", {})
         body = dict(
@@ -165,6 +208,9 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
         chat_template_kwargs: dict | None = None,
+        member_id: str | None = None,
+        prefix_candidate_indices: tuple[int, ...] | None = None,
+        model: str | None = None,
     ) -> list[int] | None:
         """
         Build prompt_ids for the next turn by stitching engine tokens with
@@ -204,7 +250,22 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             normalized_prompt_messages = normalize_for_comparison(prompt_messages)
             best_prefix_len = -1
             best_step = None
-            for step in reversed(state["trajectory"]):
+            trajectory = state["trajectory"]
+            if prefix_candidate_indices is None:
+                candidate_steps = reversed(list(trajectory))
+            else:
+                candidate_steps = (
+                    trajectory[idx]
+                    for idx in reversed(prefix_candidate_indices)
+                    if isinstance(idx, int) and 0 <= idx < len(trajectory)
+                )
+            member_key = _member_id(member_id)
+            if member_key is None:
+                member_key = _member_id(state.get("trajectory_id"))
+
+            for step in candidate_steps:
+                if member_key is not None and member_key not in _step_member_ids(step):
+                    continue
                 step_tokens = step["tokens"]
                 if step_tokens is None:
                     continue
@@ -316,18 +377,19 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             if chat_template_kwargs
             else {}
         )
+        bridge_model = model or state["model"]
 
         try:
             bridge_full_ids = await self.tokenize(
                 messages=[dummy_assistant] + env_messages,
                 tools=oai_tools,
-                model=state["model"],
+                model=bridge_model,
                 extra_kwargs=dict(forwarded_ctk),
             )
             bridge_base_ids = await self.tokenize(
                 messages=[dummy_assistant],
                 tools=oai_tools,
-                model=state["model"],
+                model=bridge_model,
                 extra_kwargs=dict(add_generation_prompt=False, **forwarded_ctk),
             )
         except Exception:

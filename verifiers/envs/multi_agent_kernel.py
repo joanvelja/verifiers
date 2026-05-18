@@ -1,11 +1,10 @@
 """Pure-functional multi-agent episode kernel."""
 
-import re
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Protocol, runtime_checkable
 
-from verifiers.errors import ContentParseError, KernelProtocolError
+from verifiers.errors import KernelProtocolError
 
 
 @dataclass(frozen=True)
@@ -28,31 +27,26 @@ class TurnSlot:
 
 
 @dataclass(frozen=True)
+class ContentChannels:
+    """Protocol-facing view of a raw model response."""
+
+    public: str
+    private: str | None = None
+    parse_error: str | None = None
+
+
+@dataclass(frozen=True)
 class Utterance:
-    """Structured agent output committed to the transcript.
-
-    Three channels, populated once at commit time by ``parse_channels``:
-
-    - ``raw_content``: verbatim model output, never mutated. Author's view
-      renders this directly. Training bridge reads this for loss.
-    - ``public_channel``: content with ``<{think_tag}>...</{think_tag}>``
-      removed. Opponent/judge view uses this; field extractors read this.
-    - ``private_channel``: the stripped think-block contents (or None if
-      absent). May be revealed to select viewers by visibility policy.
-    """
+    """Structured agent output committed to the transcript."""
 
     member_id: str
+    turn_index: int
     slot_id: int
     phase: str
     raw_content: str
     public_channel: str
     private_channel: str | None
     token_count: int
-    # Per-utterance quarantine flag: populated when parse_channels rejected
-    # the raw output (unclosed/nested/multiple/stray tags). Non-None means
-    # the rollout continues but downstream consumers (rubric, bridge) know
-    # this member's channel split is unreliable — public_channel is forced
-    # to "" and private_channel to None so no malformed markup leaks.
     parse_error: str | None = None
 
 
@@ -100,114 +94,46 @@ class StaticSchedule:
         return len(self._slots)
 
 
-# ---------------------------------------------------------------------------
-# Channel parsing
-# ---------------------------------------------------------------------------
+def causal_transcript_view(
+    transcript: tuple[Utterance, ...],
+    member_id: str,
+    *,
+    start: int = 0,
+) -> tuple[Utterance, ...]:
+    """Return committed utterances in the replay order seen by ``member_id``.
 
-# Native reasoning-model tags. Always stripped from public output, even when
-# the pack configures a different private-channel tag — otherwise a model that
-# emits ``<think>secret</think>`` under a pack with ``think_tag="reason"``
-# would leak the raw native block into the opponent view.
-_NATIVE_THINK_ALT = r"think(?:ing)?"
+    The kernel stores one archival transcript: sequential commits in schedule
+    order, and simultaneous commits as a contiguous slot group in canonical
+    slot-agent order. For prompt replay, a participant's own utterance from a
+    simultaneous barrier must appear before peer utterances from that same
+    barrier; those peer utterances were not visible when the participant spoke.
 
-
-def _compile_tag(alt: str) -> tuple[re.Pattern, re.Pattern]:
-    return (
-        re.compile(rf"<(?:{alt})\b[^>]*>", re.IGNORECASE),
-        re.compile(rf"</(?:{alt})\s*>", re.IGNORECASE),
-    )
-
-
-def _extract_one_block(raw: str, alt: str, label: str) -> tuple[str, str | None]:
-    """Locate at most one ``<alt>…</alt>`` block.
-
-    Returns ``(residual, inner)``: ``residual`` has the block excised
-    (no whitespace normalization), ``inner`` is the raw body between
-    opener/closer, or ``None`` if no block was present.
-
-    Raises ``ContentParseError`` on unbalanced, multiple, nested, or
-    stray-closer markup — these are model-output formatting slips,
-    quarantined per-utterance by ``apply_action``.
+    This is topology-only. Protocols still decide which channel contents are
+    visible to a viewer.
     """
-    opener_re, closer_re = _compile_tag(alt)
-    openers = list(opener_re.finditer(raw))
-    closers = list(closer_re.finditer(raw))
-
-    if not openers and not closers:
-        return raw, None
-
-    if len(openers) != len(closers):
-        raise ContentParseError(
-            f"parse_channels: unbalanced {label} markup "
-            f"({len(openers)} opener(s), {len(closers)} closer(s))"
-        )
-
-    if len(openers) > 1:
-        # Nested vs. sequential disambiguation: second opener begins
-        # before first closer ends → nesting, else distinct blocks.
-        if openers[1].start() < closers[0].end():
-            raise ContentParseError(
-                f"parse_channels: nested {label} tags are not allowed"
-            )
-        raise ContentParseError(
-            f"parse_channels: multiple {label} blocks found "
-            f"({len(openers)}); expected at most one"
-        )
-
-    opener = openers[0]
-    closer = closers[0]
-
-    if closer.start() < opener.end():
-        raise ContentParseError(f"parse_channels: {label} closer appears before opener")
-
-    inner = raw[opener.end() : closer.start()]
-    residual = raw[: opener.start()] + raw[closer.end() :]
-    return residual, inner
+    ordered: list[Utterance] = []
+    idx = start
+    while idx < len(transcript):
+        group = _next_slot_group(transcript, idx)
+        own = tuple(utt for utt in group if utt.member_id == member_id)
+        if own:
+            ordered.extend(own)
+            ordered.extend(utt for utt in group if utt.member_id != member_id)
+        else:
+            ordered.extend(group)
+        idx += len(group)
+    return tuple(ordered)
 
 
-def parse_channels(raw: str, tag: str) -> tuple[str, str | None]:
-    """Split raw model output into ``(public_channel, private_channel)``.
-
-    Two-pass whitelist strip:
-
-    1. The configured ``tag`` block (if present) carries the author's
-       intended private reasoning → ``private_channel``.
-    2. Native ``<think>``/``<thinking>`` blocks are ALWAYS stripped from
-       the public view — even when the configured tag is different —
-       and their content is DISCARDED. Native reasoning tokens are a
-       third-party artifact of the model, not author-intended private
-       commentary, and surfacing them anywhere (opponent view, private
-       channel, rubric) would leak model-internal state that the pack
-       author did not opt into.
-
-    When the configured tag aliases the native tag (``tag`` ∈
-    {"think","thinking"}), one pass covers both: the block's content
-    IS the author's private channel.
-
-    Contract: zero or one block per whitelist entry. Malformed markup
-    (unclosed / stray / multiple / nested) in EITHER whitelist entry
-    raises ``ContentParseError``, which ``apply_action`` quarantines
-    on the utterance rather than aborting the rollout.
-    """
-    configured_alt = (
-        _NATIVE_THINK_ALT if tag in ("think", "thinking") else re.escape(tag)
-    )
-
-    residual, configured_inner = _extract_one_block(raw, configured_alt, f"<{tag}>")
-
-    # Second pass only when the configured tag is not already the native
-    # alias — otherwise pass 1 has already consumed any native block.
-    if configured_alt != _NATIVE_THINK_ALT:
-        residual, _discarded_native = _extract_one_block(
-            residual, _NATIVE_THINK_ALT, "<think>/<thinking>"
-        )
-    # Native-think contents are intentionally dropped on the floor.
-
-    public = residual.strip()
-    private_stripped = (
-        configured_inner.strip() if configured_inner is not None else None
-    )
-    return public, (private_stripped or None)
+def _next_slot_group(
+    transcript: tuple[Utterance, ...],
+    start: int,
+) -> tuple[Utterance, ...]:
+    turn_index = transcript[start].turn_index
+    end = start + 1
+    while end < len(transcript) and transcript[end].turn_index == turn_index:
+        end += 1
+    return transcript[start:end]
 
 
 def apply_action(
@@ -216,20 +142,12 @@ def apply_action(
     member_id: str,
     raw_content: str,
     token_count: int,
-    *,
-    think_tag: str = "thinking",
+    channels: ContentChannels,
 ) -> ActionResult:
     """Pure reducer. Raises KernelProtocolError on protocol violations.
 
-    ``raw_content`` is split into public/private channels via
-    ``parse_channels`` exactly once here; the resulting ``Utterance``
-    carries all three channels and downstream consumers never re-parse.
-    Callers wishing to merge provider-side reasoning (OpenAI
-    ``reasoning_content`` / Anthropic ``thinking_blocks``) into the
-    private channel must enrich ``raw_content`` themselves by wrapping
-    that reasoning in ``<{think_tag}>...</{think_tag}>`` before calling
-    here — keeping ``raw_content`` as the single source of truth for
-    both ``public_channel`` and the "full" opponent view.
+    The kernel knows turn order and commit semantics only. Protocols own
+    channel parsing and pass the resulting public/private view in ``channels``.
     """
     slot = (
         state._active_slot
@@ -251,37 +169,18 @@ def apply_action(
             f"Member {member_id!r} already submitted for slot {slot.slot_id}"
         )
 
-    # Quarantine parse failures on model output: one agent's formatting
-    # slip must not DoS the whole episode. Kernel-state violations (wrong
-    # agent, duplicate, finished) are raised above and still abort.
-    try:
-        public, private = parse_channels(raw_content, think_tag)
-        parse_error: str | None = None
-    except ContentParseError as exc:
-        public = ""
-        private = None
-        parse_error = str(exc)
-
-    # Quarantine empty-public commits. A reasoning-mode model that spends
-    # its full token budget on reasoning_content emits content="" and
-    # parses cleanly into ("", maybe-private). Committing it lets the
-    # schedule advance with no anchor for "what did this agent say",
-    # which downstream prompts then re-render as a lone <thinking> block
-    # — confusing the next own-turn into thinking it's still in the
-    # previous phase. Treat the absence of a public utterance as a
-    # protocol violation, same as a malformed parse: trainer masks the
-    # tokens, opponent renderer skips attribution. private_channel is
-    # preserved for telemetry but never reaches an opponent's view.
-    if parse_error is None and not public.strip():
+    parse_error = channels.parse_error
+    if parse_error is None and not channels.public.strip():
         parse_error = "empty public channel (model emitted no visible answer)"
 
     utterance = Utterance(
         member_id=member_id,
+        turn_index=state.slot_index,
         slot_id=slot.slot_id,
         phase=slot.phase,
         raw_content=raw_content,
-        public_channel=public,
-        private_channel=private,
+        public_channel=channels.public,
+        private_channel=channels.private,
         token_count=token_count,
         parse_error=parse_error,
     )

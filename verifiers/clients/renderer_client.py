@@ -281,24 +281,24 @@ def _step_multi_modal_data(step: Any):
     return _get_value(raw_tokens, "multi_modal_data")
 
 
-def _lineage_key(value: Any) -> str | None:
+def _member_id(value: Any) -> str | None:
     if value is None:
         return None
     key = str(value)
     return key or None
 
 
-def _step_lineage_keys(step: Any) -> set[str]:
+def _step_member_ids(step: Any) -> set[str]:
     """Return stream identifiers that can safely anchor this trajectory step."""
     keys: set[str] = set()
 
     extras = _get_value(step, "extras")
     if isinstance(extras, Mapping):
-        key = _lineage_key(extras.get("member_id"))
+        key = _member_id(extras.get("member_id"))
         if key is not None:
             keys.add(key)
 
-    key = _lineage_key(_get_value(step, "trajectory_id"))
+    key = _member_id(_get_value(step, "trajectory_id"))
     if key is not None:
         keys.add(key)
 
@@ -319,7 +319,8 @@ async def _get_incremental_prompt_ids(
     prompt: list[RendererMessage],
     state: Any,
     tools: list[ToolSpec] | None,
-    lineage_key: str | None = None,
+    member_id: str | None = None,
+    prefix_candidate_indices: tuple[int, ...] | None = None,
 ) -> "RenderedTokens | None":
     """Return the bridged prompt for the next turn as ``RenderedTokens``.
 
@@ -334,9 +335,9 @@ async def _get_incremental_prompt_ids(
     if not trajectory:
         return None
 
-    stream_key = _lineage_key(lineage_key)
-    if stream_key is None:
-        stream_key = _lineage_key(_get_value(state, "trajectory_id"))
+    member_key = _member_id(member_id)
+    if member_key is None:
+        member_key = _member_id(_get_value(state, "trajectory_id"))
 
     # Each renderer's bridge_to_next_turn (or the generic fallback) decides
     # how to handle a truncated anchor, so we don't special-case truncation
@@ -345,8 +346,18 @@ async def _get_incremental_prompt_ids(
     # falls back to a full re-render — matching main's TITO-on-truncation
     # behavior.
     normalized_prompt = _normalize_for_comparison(prompt)
-    for step in reversed(list(trajectory)):
-        if stream_key is not None and stream_key not in _step_lineage_keys(step):
+
+    if prefix_candidate_indices is None:
+        candidate_steps = reversed(list(trajectory))
+    else:
+        candidate_steps = (
+            trajectory[idx]
+            for idx in reversed(prefix_candidate_indices)
+            if isinstance(idx, int) and 0 <= idx < len(trajectory)
+        )
+
+    for step in candidate_steps:
+        if member_key is not None and member_key not in _step_member_ids(step):
             continue
 
         token_ids = _step_token_ids(step)
@@ -554,13 +565,22 @@ class RendererClient(
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
 
+        state = kwargs.get("state")
         bridged = await _get_incremental_prompt_ids(
             renderer=renderer,
             prompt=prompt,
-            state=kwargs.get("state"),
+            state=state,
             tools=tools,
-            lineage_key=kwargs.get("lineage_key"),
+            member_id=kwargs.get("member_id"),
+            prefix_candidate_indices=kwargs.get("prefix_candidate_indices"),
         )
+        if _get_value(state, "trajectory"):
+            metric = (
+                "client/renderer_bridge_hit"
+                if bridged is not None
+                else "client/renderer_bridge_miss"
+            )
+            self._increment_state_metric(state, metric)
         # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
         # so multimodal renderers thread per-image features through to
         # /inference/v1/generate without re-rendering the whole turn.
@@ -583,7 +603,7 @@ class RendererClient(
             cache_salt=args.get("cache_salt")
             or sampling_params.pop("cache_salt", None),
             priority=args.get("priority") or sampling_params.pop("priority", None),
-            extra_headers=args.get("extra_headers"),
+            extra_headers=kwargs.get("extra_headers"),
         )
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:

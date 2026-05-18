@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from verifiers.envs.debate_rubric import winning_member, zero_sum_reward
+from verifiers.protocols.debate.rubric import winning_member, zero_sum_reward
 
 
 def _step(member_id: str, **extras: Any) -> dict[str, Any]:

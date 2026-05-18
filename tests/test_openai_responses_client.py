@@ -112,6 +112,8 @@ async def test_get_native_response_normalizes_sampling_args_and_tools():
             )
         ],
         extra_headers={"X-Test": "1"},
+        member_id="agent_a",
+        prefix_candidate_indices=(0,),
     )
 
     assert response is native_response
@@ -122,6 +124,8 @@ async def test_get_native_response_normalizes_sampling_args_and_tools():
     assert "max_tokens" not in call
     assert call["extra_body"] == {"foo": "bar"}
     assert call["extra_headers"] == {"X-Test": "1"}
+    assert "member_id" not in call
+    assert "prefix_candidate_indices" not in call
     assert call["tools"] == [
         {
             "type": "function",

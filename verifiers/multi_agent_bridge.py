@@ -1,8 +1,35 @@
 """Split a multi-agent RolloutOutput into per-member training rollouts."""
 
-from typing import Any, Mapping
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from .types import MARScore, MemberRollout, RolloutOutput
+
+
+def _member_generation(member_id: str, steps: Sequence[Any]) -> dict[str, Any] | None:
+    generations: list[dict[str, Any]] = []
+    for step in steps:
+        extras = step.get("extras")
+        if not isinstance(extras, Mapping):
+            continue
+        generation = extras.get("generation")
+        if generation is None:
+            continue
+        if not isinstance(generation, Mapping):
+            raise TypeError(
+                f"Trajectory generation metadata for {member_id!r} must be a mapping"
+            )
+        generations.append(dict(generation))
+    if not generations:
+        return None
+    first = generations[0]
+    for generation in generations[1:]:
+        if generation != first:
+            raise ValueError(
+                f"member_id={member_id!r} has inconsistent generation targets across "
+                "trajectory steps"
+            )
+    return first
 
 
 def rollout_to_member_rollouts(
@@ -50,12 +77,6 @@ def rollout_to_member_rollouts(
             "``--state-columns trajectory``)."
         )
 
-    # vf-eval doesn't always populate temperature in saved metadata when
-    # the user passes --sampling-args without it. Default to OpenAI's
-    # canonical 1.0 rather than crashing on the first such rollout.
-    member_sampling_args = dict(sampling_args)
-    member_sampling_args.setdefault("temperature", 1.0)
-
     steps_by_member = MultiAgentRubric.split_by_member(output)
     expected_members = {m.member_id for m in mar.members}
     extra_members = set(steps_by_member) - expected_members
@@ -74,16 +95,30 @@ def rollout_to_member_rollouts(
             "member trajectories would silently corrupt training data"
         )
 
-    return [
-        MemberRollout(
+    member_rollouts: list[MemberRollout] = []
+    for member in mar.members:
+        member_steps = steps_by_member.get(member.member_id, [])
+        generation = _member_generation(member.member_id, member_steps)
+        member_sampling_args = (
+            dict(generation.get("sampling_args") or {})
+            if generation is not None
+            else dict(sampling_args)
+        )
+        member_sampling_args.setdefault("temperature", 1.0)
+        member_rollout = MemberRollout(
             example_id=example_id,
             task=task,
-            trajectory=steps_by_member.get(member.member_id, []),
+            trajectory=member_steps,
             sampling_args=member_sampling_args,
             error=rollout_error,
             reward=member.reward,
             episode_id=episode_id,
             member_id=member.member_id,
         )
-        for member in mar.members
-    ]
+        if generation is not None:
+            member_rollout["generation"] = generation
+            model = generation.get("model")
+            if isinstance(model, str):
+                member_rollout["model"] = model
+        member_rollouts.append(member_rollout)
+    return member_rollouts
