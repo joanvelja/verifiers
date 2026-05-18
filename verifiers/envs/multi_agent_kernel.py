@@ -40,6 +40,7 @@ class Utterance:
     """Structured agent output committed to the transcript."""
 
     member_id: str
+    turn_index: int
     slot_id: int
     phase: str
     raw_content: str
@@ -128,9 +129,9 @@ def _next_slot_group(
     transcript: tuple[Utterance, ...],
     start: int,
 ) -> tuple[Utterance, ...]:
-    slot_id = transcript[start].slot_id
+    turn_index = transcript[start].turn_index
     end = start + 1
-    while end < len(transcript) and transcript[end].slot_id == slot_id:
+    while end < len(transcript) and transcript[end].turn_index == turn_index:
         end += 1
     return transcript[start:end]
 
@@ -174,6 +175,7 @@ def apply_action(
 
     utterance = Utterance(
         member_id=member_id,
+        turn_index=state.slot_index,
         slot_id=slot.slot_id,
         phase=slot.phase,
         raw_content=raw_content,

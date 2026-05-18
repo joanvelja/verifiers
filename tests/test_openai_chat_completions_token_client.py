@@ -51,6 +51,7 @@ class _PromptIdTestClient(OpenAIChatCompletionsTokenClient):
     def __init__(self, full_prompt_ids: list[int]) -> None:
         super().__init__(_NoopClient())
         self._full_prompt_ids = full_prompt_ids
+        self.tokenize_models: list[str] = []
 
     async def to_native_prompt(self, messages):  # type: ignore[override]
         return cast(Any, messages), {}
@@ -63,6 +64,7 @@ class _PromptIdTestClient(OpenAIChatCompletionsTokenClient):
         extra_kwargs: dict = {},
         **kwargs,
     ) -> list[int]:
+        self.tokenize_models.append(model)
         if isinstance(messages, str):
             assert messages == "World!"
             return [777]
@@ -183,7 +185,7 @@ async def test_get_prompt_ids_uses_largest_message_prefix_match():
 
 
 @pytest.mark.asyncio
-async def test_get_prompt_ids_filters_by_lineage_key():
+async def test_get_prompt_ids_filters_by_member_id():
     client = _PromptIdTestClient(full_prompt_ids=[1, 2, 3, 99, 5])
     prompt_messages = cast(
         Any,
@@ -217,7 +219,7 @@ async def test_get_prompt_ids_filters_by_lineage_key():
     )
 
     prompt_ids = await client.get_prompt_ids(
-        state, prompt_messages, oai_tools=None, lineage_key="agent_a"
+        state, prompt_messages, oai_tools=None, member_id="agent_a"
     )
 
     assert prompt_ids is not None
@@ -270,6 +272,45 @@ async def test_get_prompt_ids_uses_candidate_indices_without_flat_scan():
 
 
 @pytest.mark.asyncio
+async def test_get_prompt_ids_tokenizes_bridge_with_routed_model():
+    client = _PromptIdTestClient(full_prompt_ids=[1, 2, 99, 5])
+    prompt_messages = cast(
+        Any,
+        [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "next"},
+        ],
+    )
+    state = cast(
+        State,
+        {
+            "model": "rollout-default-model",
+            "trajectory": [
+                _make_step(
+                    prompt=[{"role": "user", "content": "u"}],
+                    completion=[{"role": "assistant", "content": "a"}],
+                    prompt_ids=[1],
+                    completion_ids=[2, 99],
+                    extras={"member_id": "agent_a"},
+                ),
+            ],
+        },
+    )
+
+    prompt_ids = await client.get_prompt_ids(
+        state,
+        prompt_messages,
+        oai_tools=None,
+        member_id="agent_a",
+        model="routed-member-model",
+    )
+
+    assert prompt_ids is not None
+    assert client.tokenize_models == ["routed-member-model", "routed-member-model"]
+
+
+@pytest.mark.asyncio
 async def test_get_prompt_ids_returns_none_when_no_prefix_match():
     client = _NoTokenizeClient()
     state = cast(
@@ -310,8 +351,9 @@ async def test_get_native_response_falls_back_to_super_when_no_prefix_match(
         prompt_messages,
         oai_tools,
         chat_template_kwargs=None,
-        lineage_key=None,
+        member_id=None,
         prefix_candidate_indices=None,
+        model=None,
     ):
         return None
 
@@ -385,9 +427,11 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
         prompt_messages,
         oai_tools,
         chat_template_kwargs=None,
-        lineage_key=None,
+        member_id=None,
         prefix_candidate_indices=None,
+        model=None,
     ):
+        assert model == "routed-member-model"
         return [10, 20]
 
     monkeypatch.setattr(
@@ -412,7 +456,7 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
 
     response = await client.get_native_response(
         prompt=prompt,
-        model="test-model",
+        model="routed-member-model",
         sampling_args={},
         tools=None,
         state=state,

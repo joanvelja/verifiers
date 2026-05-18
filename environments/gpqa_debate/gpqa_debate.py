@@ -13,11 +13,9 @@ from verifiers.protocols.debate.env import (
 LETTERS = ("A", "B", "C", "D")
 
 DEFAULT_SCHEDULE = [
-    {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
-    {"slot_id": 1, "agents": ["debater_b"], "phase": "propose"},
-    {"slot_id": 2, "agents": ["debater_a"], "phase": "critique"},
-    {"slot_id": 3, "agents": ["debater_b"], "phase": "critique"},
-    {"slot_id": 4, "agents": ["judge"], "phase": "final"},
+    {"slot_id": 0, "agents": ["debater_a", "debater_b"], "phase": "propose"},
+    {"slot_id": 1, "agents": ["debater_a", "debater_b"], "phase": "critique"},
+    {"slot_id": 2, "agents": ["judge"], "phase": "final"},
 ]
 
 
@@ -28,7 +26,7 @@ def load_environment(
     num_eval_examples: int = -1,
     seed: int = 0,
     schedule: list[dict] | None = None,
-    truth_member: str = "debater_a",
+    truth_member: str | None = None,
 ) -> DebateEnv:
     def build_split(n: int, split_seed: int) -> Dataset:
         vf.ensure_keys(["HF_TOKEN"])

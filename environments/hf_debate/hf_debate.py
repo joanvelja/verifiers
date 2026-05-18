@@ -50,7 +50,7 @@ def load_environment(
     num_eval_examples: int = -1,
     schedule: list[vf.ConfigData] | None = None,
     prompts_ref: str | None = None,
-    truth_member: str = "debater_a",
+    truth_member: str | None = None,
     judge_model: str = "gpt-5.4-nano",
     **extra: object,
 ) -> vf.Environment:

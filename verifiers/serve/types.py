@@ -7,6 +7,8 @@ from pydantic import SkipValidation  # nosemgrep: verifiers-no-skip-validation
 
 from verifiers.types import (
     ClientConfig,
+    GenerationPlan,
+    MemberGenerationPlan,
     RolloutInput,
     RolloutOutput,
     SamplingArgs,
@@ -55,6 +57,7 @@ class RunRolloutRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    generation: MemberGenerationPlan | None = None
 
 
 class RunRolloutResponse(BaseResponse):
@@ -71,6 +74,7 @@ class RunGroupRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    generation: GenerationPlan | None = None
 
 
 class RunGroupResponse(BaseResponse):

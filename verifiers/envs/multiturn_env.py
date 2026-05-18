@@ -172,8 +172,9 @@ class MultiTurnEnv(vf.Environment):
         client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        generation: vf.MemberGenerationPlan | None = None,
     ) -> State:
-        state = await self.init_state(input, client, model, sampling_args)
+        state = await self.init_state(input, client, model, sampling_args, generation)
 
         async def rollout_loop() -> None:
             nonlocal state

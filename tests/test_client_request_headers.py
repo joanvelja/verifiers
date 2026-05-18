@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from verifiers.clients.client import Client, VERIFIERS_LINEAGE_HEADER
+from verifiers.clients.client import Client, VERIFIERS_MEMBER_HEADER
 from verifiers.types import (
     ClientConfig,
     Messages,
@@ -59,7 +59,7 @@ class _HeaderRecordingClient(Client[None, Messages, dict[str, Any], Tool]):
 
 
 @pytest.mark.asyncio
-async def test_request_headers_merge_state_caller_and_lineage() -> None:
+async def test_request_headers_merge_state_caller_and_member_id() -> None:
     client = _HeaderRecordingClient(
         ClientConfig(
             extra_headers_from_state={
@@ -78,7 +78,7 @@ async def test_request_headers_merge_state_caller_and_lineage() -> None:
             "runtime": {"actor_ref": "rollout-1"},
         },
         extra_headers={"X-Session-ID": "caller", "X-Caller": "yes"},
-        lineage_key="debater_a",
+        member_id="debater_a",
     )
 
     headers = client.calls[0]["extra_headers"]
@@ -86,5 +86,5 @@ async def test_request_headers_merge_state_caller_and_lineage() -> None:
         "X-Session-ID": "caller",
         "X-Actor-Ref": "rollout-1",
         "X-Caller": "yes",
-        VERIFIERS_LINEAGE_HEADER: "debater_a",
+        VERIFIERS_MEMBER_HEADER: "debater_a",
     }

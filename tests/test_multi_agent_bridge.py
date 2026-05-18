@@ -34,9 +34,12 @@ from verifiers.types import MARScore, MemberScore
 # -----------------------------------------------------------------------
 
 
-def _step(member_id: str) -> dict[str, Any]:
+def _step(member_id: str, generation: dict[str, Any] | None = None) -> dict[str, Any]:
+    extras = {"member_id": member_id}
+    if generation is not None:
+        extras["generation"] = generation
     return {
-        "extras": {"member_id": member_id},
+        "extras": extras,
         "advantage": None,
         "reward": None,
         "tokens": None,
@@ -82,6 +85,45 @@ def test_bridge_preserves_full_sampling_args() -> None:
 def test_bridge_defaults_temperature_when_missing_but_keeps_other_args() -> None:
     members = rollout_to_member_rollouts(_output(sampling_args={"max_tokens": 64}))
     assert members[0]["sampling_args"] == {"temperature": 1.0, "max_tokens": 64}
+
+
+def test_bridge_uses_member_generation_sampling_args_and_model() -> None:
+    generation = {
+        "model": "model-a",
+        "sampling_args": {"temperature": 0.2, "max_tokens": 32},
+        "client": {"client_type": "openai_chat_completions"},
+    }
+    members = rollout_to_member_rollouts(
+        _output(trajectory=[_step("A", generation=generation)])
+    )
+
+    assert members[0]["sampling_args"] == {"temperature": 0.2, "max_tokens": 32}
+    assert members[0]["model"] == "model-a"
+    assert members[0]["generation"] == generation
+
+
+def test_bridge_rejects_inconsistent_member_generation_targets() -> None:
+    with pytest.raises(ValueError, match="inconsistent generation targets"):
+        rollout_to_member_rollouts(
+            _output(
+                trajectory=[
+                    _step(
+                        "A",
+                        generation={
+                            "model": "model-a",
+                            "sampling_args": {"temperature": 0.2},
+                        },
+                    ),
+                    _step(
+                        "A",
+                        generation={
+                            "model": "model-a",
+                            "sampling_args": {"temperature": 0.8},
+                        },
+                    ),
+                ]
+            )
+        )
 
 
 # -----------------------------------------------------------------------

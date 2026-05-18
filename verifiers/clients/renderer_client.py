@@ -281,24 +281,24 @@ def _step_multi_modal_data(step: Any):
     return _get_value(raw_tokens, "multi_modal_data")
 
 
-def _lineage_key(value: Any) -> str | None:
+def _member_id(value: Any) -> str | None:
     if value is None:
         return None
     key = str(value)
     return key or None
 
 
-def _step_lineage_keys(step: Any) -> set[str]:
+def _step_member_ids(step: Any) -> set[str]:
     """Return stream identifiers that can safely anchor this trajectory step."""
     keys: set[str] = set()
 
     extras = _get_value(step, "extras")
     if isinstance(extras, Mapping):
-        key = _lineage_key(extras.get("member_id"))
+        key = _member_id(extras.get("member_id"))
         if key is not None:
             keys.add(key)
 
-    key = _lineage_key(_get_value(step, "trajectory_id"))
+    key = _member_id(_get_value(step, "trajectory_id"))
     if key is not None:
         keys.add(key)
 
@@ -319,7 +319,7 @@ async def _get_incremental_prompt_ids(
     prompt: list[RendererMessage],
     state: Any,
     tools: list[ToolSpec] | None,
-    lineage_key: str | None = None,
+    member_id: str | None = None,
     prefix_candidate_indices: tuple[int, ...] | None = None,
 ) -> "RenderedTokens | None":
     """Return the bridged prompt for the next turn as ``RenderedTokens``.
@@ -335,9 +335,9 @@ async def _get_incremental_prompt_ids(
     if not trajectory:
         return None
 
-    stream_key = _lineage_key(lineage_key)
-    if stream_key is None:
-        stream_key = _lineage_key(_get_value(state, "trajectory_id"))
+    member_key = _member_id(member_id)
+    if member_key is None:
+        member_key = _member_id(_get_value(state, "trajectory_id"))
 
     # Each renderer's bridge_to_next_turn (or the generic fallback) decides
     # how to handle a truncated anchor, so we don't special-case truncation
@@ -357,7 +357,7 @@ async def _get_incremental_prompt_ids(
         )
 
     for step in candidate_steps:
-        if stream_key is not None and stream_key not in _step_lineage_keys(step):
+        if member_key is not None and member_key not in _step_member_ids(step):
             continue
 
         token_ids = _step_token_ids(step)
@@ -571,7 +571,7 @@ class RendererClient(
             prompt=prompt,
             state=state,
             tools=tools,
-            lineage_key=kwargs.get("lineage_key"),
+            member_id=kwargs.get("member_id"),
             prefix_candidate_indices=kwargs.get("prefix_candidate_indices"),
         )
         if _get_value(state, "trajectory"):

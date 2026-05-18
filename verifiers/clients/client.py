@@ -37,7 +37,7 @@ AUTH_ERRORS: tuple[type[Exception], ...] = (
     AnthropicPermissionDeniedError,
 )
 
-VERIFIERS_LINEAGE_HEADER = "X-Verifiers-Lineage-Key"
+VERIFIERS_MEMBER_HEADER = "X-Verifiers-Member-ID"
 
 
 class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
@@ -148,9 +148,9 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
         headers = self._build_state_headers(kwargs.get("state")) or {}
         caller_headers = kwargs.get("extra_headers") or {}
         headers.update(caller_headers)
-        lineage_key = kwargs.get("lineage_key")
-        if lineage_key is not None:
-            headers[VERIFIERS_LINEAGE_HEADER] = str(lineage_key)
+        member_id = kwargs.get("member_id")
+        if member_id is not None:
+            headers[VERIFIERS_MEMBER_HEADER] = str(member_id)
         return headers or None
 
     def _increment_state_metric(self, state, key: str, value: float = 1.0) -> None:

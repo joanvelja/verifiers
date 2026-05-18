@@ -395,7 +395,7 @@ async def test_get_incremental_prompt_ids_accepts_tool_then_user_tail():
 
 
 @pytest.mark.asyncio
-async def test_get_incremental_prompt_ids_partitions_by_lineage_key():
+async def test_get_incremental_prompt_ids_partitions_by_member_id():
     renderer = _BridgeRenderer()
     prompt_messages = [SystemMessage(content="s"), UserMessage(content="u")]
     completion_messages = [AssistantMessage(content="a")]
@@ -437,7 +437,7 @@ async def test_get_incremental_prompt_ids_partitions_by_lineage_key():
         prompt=prompt,
         state=state,
         tools=None,
-        lineage_key="agent_a",
+        member_id="agent_a",
     )
 
     assert result is not None
@@ -549,7 +549,7 @@ async def test_renderer_client_records_bridge_hit_and_miss_metrics():
             sampling_args={},
             tools=None,
             state=matching_state,
-            lineage_key="agent_a",
+            member_id="agent_a",
         )
         await client.get_native_response(
             prompt=prompt,
@@ -557,7 +557,7 @@ async def test_renderer_client_records_bridge_hit_and_miss_metrics():
             sampling_args={},
             tools=None,
             state=mismatching_state,
-            lineage_key="agent_a",
+            member_id="agent_a",
         )
 
     assert matching_state["metrics"]["client/renderer_bridge_hit"] == 1.0
@@ -565,7 +565,7 @@ async def test_renderer_client_records_bridge_hit_and_miss_metrics():
 
 
 @pytest.mark.asyncio
-async def test_get_incremental_prompt_ids_uses_state_trajectory_id_as_stream_key():
+async def test_get_incremental_prompt_ids_uses_state_trajectory_id_as_member_key():
     renderer = _BridgeRenderer()
     prompt_messages = [SystemMessage(content="s"), UserMessage(content="u")]
     completion_messages = [AssistantMessage(content="a")]

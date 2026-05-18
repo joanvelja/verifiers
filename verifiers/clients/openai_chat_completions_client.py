@@ -333,6 +333,9 @@ class OpenAIChatCompletionsClient(
             sampling_args = {**sampling_args, "modalities": ["text"]}
 
         extra_headers = kwargs.pop("extra_headers", None)
+        kwargs.pop("state", None)
+        kwargs.pop("member_id", None)
+        kwargs.pop("prefix_candidate_indices", None)
 
         if tools:
             response = await self.client.chat.completions.create(
@@ -340,6 +343,7 @@ class OpenAIChatCompletionsClient(
                 messages=prompt,
                 tools=tools,
                 extra_headers=extra_headers,
+                **kwargs,
                 **normalize_sampling_args(sampling_args),
             )
         else:
@@ -347,6 +351,7 @@ class OpenAIChatCompletionsClient(
                 model=model,
                 messages=prompt,
                 extra_headers=extra_headers,
+                **kwargs,
                 **normalize_sampling_args(sampling_args),
             )
         return response

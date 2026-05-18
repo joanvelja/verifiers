@@ -51,23 +51,23 @@ def _get_value(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
-def _lineage_key(value: Any) -> str | None:
+def _member_id(value: Any) -> str | None:
     if value is None:
         return None
     key = str(value)
     return key or None
 
 
-def _step_lineage_keys(step: Any) -> set[str]:
+def _step_member_ids(step: Any) -> set[str]:
     keys: set[str] = set()
 
     extras = _get_value(step, "extras")
     if isinstance(extras, Mapping):
-        key = _lineage_key(extras.get("member_id"))
+        key = _member_id(extras.get("member_id"))
         if key is not None:
             keys.add(key)
 
-    key = _lineage_key(_get_value(step, "trajectory_id"))
+    key = _member_id(_get_value(step, "trajectory_id"))
     if key is not None:
         keys.add(key)
 
@@ -133,7 +133,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         sampling_args = normalize_sampling_args(sampling_args)
         state = cast(State, kwargs.pop("state"))
         extra_headers = kwargs.pop("extra_headers", None)
-        lineage_key = kwargs.pop("lineage_key", None)
+        member_id = kwargs.pop("member_id", None)
         prefix_candidate_indices = kwargs.pop("prefix_candidate_indices", None)
         # Use standard /chat/completions for: (1) first turn (no prior tokens
         # to stitch), or (2) conversations that contain multimodal content in
@@ -165,8 +165,9 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             prompt,
             tools,
             chat_template_kwargs=chat_template_kwargs,
-            lineage_key=lineage_key,
+            member_id=member_id,
             prefix_candidate_indices=prefix_candidate_indices,
+            model=model,
         )
         if prompt_ids is None:
             # Reaching this branch means we have a non-empty trajectory but
@@ -207,8 +208,9 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
         chat_template_kwargs: dict | None = None,
-        lineage_key: str | None = None,
+        member_id: str | None = None,
         prefix_candidate_indices: tuple[int, ...] | None = None,
+        model: str | None = None,
     ) -> list[int] | None:
         """
         Build prompt_ids for the next turn by stitching engine tokens with
@@ -257,14 +259,12 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                     for idx in reversed(prefix_candidate_indices)
                     if isinstance(idx, int) and 0 <= idx < len(trajectory)
                 )
-            stream_key = _lineage_key(lineage_key)
-            if stream_key is None:
-                stream_key = _lineage_key(state.get("trajectory_id"))
+            member_key = _member_id(member_id)
+            if member_key is None:
+                member_key = _member_id(state.get("trajectory_id"))
 
             for step in candidate_steps:
-                if stream_key is not None and stream_key not in _step_lineage_keys(
-                    step
-                ):
+                if member_key is not None and member_key not in _step_member_ids(step):
                     continue
                 step_tokens = step["tokens"]
                 if step_tokens is None:
@@ -377,18 +377,19 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             if chat_template_kwargs
             else {}
         )
+        bridge_model = model or state["model"]
 
         try:
             bridge_full_ids = await self.tokenize(
                 messages=[dummy_assistant] + env_messages,
                 tools=oai_tools,
-                model=state["model"],
+                model=bridge_model,
                 extra_kwargs=dict(forwarded_ctk),
             )
             bridge_base_ids = await self.tokenize(
                 messages=[dummy_assistant],
                 tools=oai_tools,
-                model=state["model"],
+                model=bridge_model,
                 extra_kwargs=dict(add_generation_prompt=False, **forwarded_ctk),
             )
         except Exception:

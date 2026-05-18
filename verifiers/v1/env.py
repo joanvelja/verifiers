@@ -4,8 +4,13 @@ from typing import cast
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.types import ClientConfig
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import (
+    ClientConfig,
+    GenerationPlan,
+    MemberGenerationPlan,
+    RolloutInput,
+    SamplingArgs,
+)
 
 from .harness import Harness
 from .state import State
@@ -51,6 +56,7 @@ class Env(vf.Environment):
         client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        generation: MemberGenerationPlan | None = None,
     ) -> State:
         task = self.taskset.to_task(input)
         state = State.for_task(task)
@@ -71,8 +77,9 @@ class Env(vf.Environment):
         client: Client,
         model: str,
         sampling_args: SamplingArgs,
+        generation: MemberGenerationPlan | None = None,
     ) -> State:
-        return await self.rollout(input, client, model, sampling_args)
+        return await self.rollout(input, client, model, sampling_args, generation)
 
     async def _run_group_states(
         self,
@@ -80,6 +87,7 @@ class Env(vf.Environment):
         client: Client,
         model: str,
         sampling_args: SamplingArgs,
+        generation: GenerationPlan | None = None,
     ) -> list[vf.State]:
         base_task = self.taskset.to_task(group_inputs[0])
         tasks, states = await self.taskset.init_group(base_task, len(group_inputs))

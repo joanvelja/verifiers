@@ -377,6 +377,8 @@ class AnthropicMessagesClient(
 
         # Remove internal framework keys not recognized by the Anthropic SDK
         kwargs.pop("state", None)
+        kwargs.pop("member_id", None)
+        kwargs.pop("prefix_candidate_indices", None)
 
         if tools:
             return await self.client.messages.create(

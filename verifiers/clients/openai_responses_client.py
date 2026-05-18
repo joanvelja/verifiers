@@ -244,7 +244,7 @@ class OpenAIResponsesClient(
 
         extra_headers = kwargs.pop("extra_headers", None)
         kwargs.pop("state", None)
-        kwargs.pop("lineage_key", None)
+        kwargs.pop("member_id", None)
         kwargs.pop("prefix_candidate_indices", None)
         normalized_args, extra_body = normalize_sampling_args(sampling_args)
         if extra_body is not None:

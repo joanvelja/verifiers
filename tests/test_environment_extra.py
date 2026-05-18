@@ -25,6 +25,7 @@ from verifiers.types import (
     ClientConfig,
     GenerateOutputs,
     MARScore,
+    MemberGenerationPlan,
     MemberScore,
     Response,
     ResponseMessage,
@@ -202,11 +203,11 @@ async def test_get_model_response_tracks_usage_on_state(
 
 
 @pytest.mark.asyncio
-async def test_get_model_response_uses_request_context_lineage_and_tracker(
+async def test_get_model_response_uses_request_context_member_id_and_tracker(
     mock_client, make_dummy_env, make_input
 ):
     env = make_dummy_env(mock_client)
-    prompt: vf.Messages = [{"role": "user", "content": "Track lineage"}]
+    prompt: vf.Messages = [{"role": "user", "content": "Track member"}]
     state = await env.init_state(
         input=make_input(prompt=prompt),
         client=mock_client,
@@ -238,13 +239,13 @@ async def test_get_model_response_uses_request_context_lineage_and_tracker(
         state=state,
         prompt=prompt,
         request_context=ModelRequestContext(
-            lineage_key="agent_a",
+            member_id="agent_a",
             usage_tracker=child_tracker,
             prefix_candidate_indices=(1, 3),
         ),
     )
 
-    assert mock_client.get_response.call_args.kwargs["lineage_key"] == "agent_a"
+    assert mock_client.get_response.call_args.kwargs["member_id"] == "agent_a"
     assert mock_client.get_response.call_args.kwargs["prefix_candidate_indices"] == (
         1,
         3,
@@ -417,6 +418,19 @@ def test_evaluate_fallback_and_repeat(mock_client, make_dummy_env, make_input):
     # Expect n * r rollouts in outputs
     states = outputs["outputs"]
     assert len(states) == 2 * 2
+
+
+def test_evaluate_sync_accepts_generation(mock_client, make_dummy_env):
+    env = make_dummy_env(mock_client)
+
+    outputs = env.evaluate_sync(
+        client=mock_client,
+        model="test-model",
+        generation=MemberGenerationPlan(),
+    )
+
+    assert len(outputs["outputs"]) == 1
+    assert outputs["outputs"][0]["completion"] is not None
 
 
 @pytest.mark.asyncio

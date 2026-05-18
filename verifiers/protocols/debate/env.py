@@ -8,12 +8,12 @@ Keeps only debate-specific concerns:
   * Final debate transcript rendered into ``state['completion']``
 
 Generic machinery (rollout loop, atomic simultaneous commit, stop
-conditions, kernel threading, lineage cache, trajectory step append) is
+conditions, kernel threading, member-scoped cache, trajectory step append) is
 inherited from :class:`MultiAgentEnv`.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 from verifiers.protocols.debate.channels import merge_provider_reasoning, parse_channels
 from verifiers.protocols.debate.parsing import extract_fields
@@ -329,21 +329,29 @@ class DebateEnv(MultiAgentEnv):
         and is the part that otherwise caused every prompt build to rescan the
         whole episode.
         """
-        cache_root = state.get(_PROMPT_BODY_CACHE_KEY)
-        if not isinstance(cache_root, dict):
+        raw_cache_root = state.get(_PROMPT_BODY_CACHE_KEY)
+        if isinstance(raw_cache_root, dict):
+            cache_root = cast(dict[str, dict[str, object]], raw_cache_root)
+        else:
             cache_root = {}
             state[_PROMPT_BODY_CACHE_KEY] = cache_root
 
-        cache = cache_root.get(member_id)
+        raw_cache = cache_root.get(member_id)
         answer = state["answer"]
+        raw_cache_processed = raw_cache.get("processed", 0) if raw_cache else 0
+        cache_processed = (
+            raw_cache_processed
+            if isinstance(raw_cache_processed, int)
+            else len(transcript) + 1
+        )
         if (
-            not isinstance(cache, dict)
-            or cache.get("question") != question
-            or cache.get("answer") != answer
-            or cache.get("num_rounds") != num_rounds
-            or cache.get("processed", 0) > len(transcript)
+            raw_cache is None
+            or raw_cache.get("question") != question
+            or raw_cache.get("answer") != answer
+            or raw_cache.get("num_rounds") != num_rounds
+            or cache_processed > len(transcript)
         ):
-            cache = {
+            cache: dict[str, object] = {
                 "question": question,
                 "answer": answer,
                 "num_rounds": num_rounds,
@@ -353,11 +361,21 @@ class DebateEnv(MultiAgentEnv):
                 "source_transcript": (),
             }
             cache_root[member_id] = cache
+        else:
+            cache = raw_cache
 
-        body = cache["body"]
-        own_round = cache["own_round"]
-        processed = cache["processed"]
-        source_transcript = cache.get("source_transcript", ())
+        raw_body = cache.get("body")
+        body = cast(list[Message], raw_body) if isinstance(raw_body, list) else []
+        raw_own_round = cache.get("own_round", 0)
+        own_round = raw_own_round if isinstance(raw_own_round, int) else 0
+        raw_processed = cache.get("processed", 0)
+        processed = raw_processed if isinstance(raw_processed, int) else 0
+        raw_source_transcript = cache.get("source_transcript", ())
+        source_transcript = (
+            cast(tuple[Utterance, ...], raw_source_transcript)
+            if isinstance(raw_source_transcript, tuple)
+            else ()
+        )
         # Normal kernel traffic is append-only; direct build_prompt callers may
         # still swap in a replacement KernelState. Keep the cache honest by
         # validating the already-rendered prefix before rendering only the
@@ -537,15 +555,14 @@ def load_environment(**kwargs: Any) -> DebateEnv:
                 {"slot_id": 2, "agents": ["judge"],     "phase": "final"},
             ],
             members=["debater_a", "debater_b", "judge"],
-            truth_member="debater_a",
             prompts_ref="selfplay",
             eval_dataset=my_dataset,
         )
 
-    Required: schedule_slots, members, truth_member.
+    Required: schedule_slots, members.
     Prompt source (exactly one): ``prompts_ref`` (str, registry lookup)
     or ``prompts`` (already-built DebatePrompts).
-    Optional: judge_client, judge_model, dataset/eval_dataset.
+    Optional: truth_member, judge_client, judge_model, dataset/eval_dataset.
     """
     from verifiers.protocols.debate.rubric import DebateRubric
 
@@ -564,7 +581,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
         kwargs.pop("prompts", None),
     )
     rubric = DebateRubric(
-        truth_member=kwargs.pop("truth_member"),
+        truth_member=kwargs.pop("truth_member", None),
         members=kwargs["members"],  # don't pop — env needs it too
         prompts=prompts,
         judge_client=kwargs.pop("judge_client", None),

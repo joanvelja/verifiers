@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 
 from verifiers.types import (
     ClientConfig,
+    GenerationPlan,
+    MemberGenerationPlan,
     RolloutInput,
     RolloutOutput,
     SamplingArgs,
@@ -50,6 +52,7 @@ class EnvClient(ABC):
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        generation: MemberGenerationPlan | None = None,
     ) -> RolloutOutput:
         resolved_client_config = resolve_client_config(client_config)
         request = RunRolloutRequest(
@@ -59,6 +62,7 @@ class EnvClient(ABC):
             sampling_args=sampling_args,
             max_retries=max_retries,
             state_columns=state_columns,
+            generation=generation,
         )
         response = await self.handle_run_rollout_request(request, timeout=None)
         assert response.output is not None
@@ -72,6 +76,7 @@ class EnvClient(ABC):
         sampling_args: SamplingArgs,
         max_retries: int = 0,
         state_columns: list[str] | None = None,
+        generation: GenerationPlan | None = None,
     ) -> list[RolloutOutput]:
         resolved_client_config = resolve_client_config(client_config)
         request = RunGroupRequest(
@@ -81,6 +86,7 @@ class EnvClient(ABC):
             sampling_args=sampling_args,
             max_retries=max_retries,
             state_columns=state_columns,
+            generation=generation,
         )
         response = await self.handle_run_group_request(request, timeout=None)
         assert response.outputs is not None

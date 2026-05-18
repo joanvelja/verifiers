@@ -7,6 +7,6 @@ from verifiers.utils.usage_utils import StateUsageTracker
 class ModelRequestContext:
     """Ephemeral metadata for a single model request."""
 
-    lineage_key: str | None = None
+    member_id: str | None = None
     usage_tracker: StateUsageTracker | None = None
     prefix_candidate_indices: tuple[int, ...] | None = None

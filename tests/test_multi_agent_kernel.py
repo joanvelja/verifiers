@@ -53,6 +53,26 @@ def test_causal_transcript_view_preserves_sequential_transcript_order() -> None:
     assert _ids(causal_transcript_view(transcript, "judge")) == expected
 
 
+def test_causal_transcript_view_preserves_reused_sequential_slot_ids() -> None:
+    schedule = StaticSchedule(
+        (
+            TurnSlot(slot_id=0, agents=("agent_b",), phase="first"),
+            TurnSlot(slot_id=0, agents=("agent_a",), phase="second"),
+        )
+    )
+    transcript = _commit(
+        schedule,
+        [
+            ("agent_b", "b0"),
+            ("agent_a", "a1"),
+        ],
+    )
+
+    expected = ["agent_b:b0", "agent_a:a1"]
+    assert _ids(transcript) == expected
+    assert _ids(causal_transcript_view(transcript, "agent_a")) == expected
+
+
 def test_causal_transcript_view_replays_own_turn_first_in_simultaneous_group() -> None:
     schedule = StaticSchedule(
         (

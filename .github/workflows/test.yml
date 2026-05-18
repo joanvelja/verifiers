@@ -52,8 +52,10 @@ jobs:
           PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
           PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
         run: |
-          test -n "$PRIME_API_KEY"
-          test -n "$PRIME_TEAM_ID"
+          if [ -z "$PRIME_API_KEY" ] || [ -z "$PRIME_TEAM_ID" ]; then
+            echo "Skipping Prime sandbox tests because PRIME_API_KEY and/or PRIME_TEAM_ID are not configured."
+            exit 0
+          fi
           uv run pytest tests/test_v1_runtime_lifecycle.py -v -m prime_sandbox --cov=verifiers --cov-append --cov-report=xml --cov-report=term
   test-envs:
     name: Environments

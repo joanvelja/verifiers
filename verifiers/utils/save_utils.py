@@ -220,6 +220,7 @@ def state_to_output(
     """
     output = RolloutOutput(
         example_id=state.get("example_id", 0),
+        rollout_id=state.get("rollout_id", ""),
         task=state.get("task", ""),
         prompt=state.get("prompt"),
         completion=state.get("completion"),

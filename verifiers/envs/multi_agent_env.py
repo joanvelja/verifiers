@@ -6,7 +6,7 @@ environments (debate, RPS, PD, proposer-solver, ...):
 - Slot-scheduled rollout loop (sequential and simultaneous barriers).
 - Stop conditions with priority ordering (error > schedule_exhausted >
   prompt_too_long).
-- Per-member request lineage for cache partitioning and external routing.
+- Per-member request identity for cache partitioning and runtime routing.
 - Atomic simultaneous-slot commit (all commits land or none do).
 
 Subclasses implement only the domain-specific bits: ``build_prompt``,
@@ -240,8 +240,9 @@ class MultiAgentEnv(vf.Environment):
         client: Client,
         model: str,
         sampling_args: SamplingArgs | None = None,
+        generation: vf.MemberGenerationPlan | None = None,
     ) -> State:
-        state = await self.init_state(input, client, model, sampling_args)
+        state = await self.init_state(input, client, model, sampling_args, generation)
         state["timing"].generation.start = time.time()
         try:
             state["_kernel"] = KernelState(slot_index=0)
@@ -276,7 +277,7 @@ class MultiAgentEnv(vf.Environment):
             state,
             prompt,
             request_context=ModelRequestContext(
-                lineage_key=agent,
+                member_id=agent,
                 usage_tracker=parent_tracker,
                 prefix_candidate_indices=self._get_prefix_candidate_indices(
                     state, agent
@@ -328,7 +329,7 @@ class MultiAgentEnv(vf.Environment):
         ]
 
         # Per-agent request contexts isolate the prefix-cache partition key
-        # (``lineage_key``) and usage accounting across concurrent branches
+        # (``member_id``) and usage accounting across concurrent branches
         # without cloning the shared rollout state. Every branch charges a
         # child tracker; only the publish phase merges them back into the
         # parent, so a doomed slot never leaks token usage.
@@ -354,7 +355,7 @@ class MultiAgentEnv(vf.Environment):
                 per_agent_states[idx],
                 p,
                 request_context=ModelRequestContext(
-                    lineage_key=slot.agents[idx],
+                    member_id=slot.agents[idx],
                     usage_tracker=per_agent_trackers[idx],
                     prefix_candidate_indices=prefix_candidate_indices[idx],
                 ),
@@ -504,6 +505,9 @@ class MultiAgentEnv(vf.Environment):
             "member_id": utt.member_id,
             "phase": utt.phase,
         }
+        generation = self.generation_metadata_for_member(state, utt.member_id)
+        if generation is not None:
+            extras["generation"] = generation
         if fields is not None:
             extras["fields"] = fields
         if utt.parse_error is not None:
