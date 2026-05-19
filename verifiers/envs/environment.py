@@ -103,6 +103,8 @@ class Environment(ABC):
     Base class for all environments.
     """
 
+    is_multi_agent: bool = False
+
     def __init__(
         self,
         dataset: "Dataset | DatasetBuilder | None" = None,

@@ -4,8 +4,8 @@ Abstracts out the agent-agnostic machinery shared by multi-agent
 environments (debate, RPS, PD, proposer-solver, ...):
 
 - Slot-scheduled rollout loop (sequential and simultaneous barriers).
-- Stop conditions with priority ordering (error > schedule_exhausted >
-  prompt_too_long).
+- Stop conditions with priority ordering (error > token_limit >
+  schedule_exhausted > prompt_too_long).
 - Per-member request identity for cache partitioning and runtime routing.
 - Atomic simultaneous-slot commit (all commits land or none do).
 
@@ -81,20 +81,35 @@ class MultiAgentEnv(vf.Environment):
         O(T²) tokenization over a T-turn episode.
     """
 
+    is_multi_agent: bool = True
+
     def __init__(
         self,
         *,
         schedule: SlotProgram,
         members: list[str],
+        timeout_seconds: float | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        self.is_multi_agent = True
         if not members:
             raise ValueError("MultiAgentEnv requires a non-empty members list")
         if len(members) != len(set(members)):
             raise ValueError(f"MultiAgentEnv.members contains duplicates: {members}")
         self.schedule: SlotProgram = schedule
         self.members: list[str] = list(members)
+        self.timeout_seconds = timeout_seconds
+        self.max_total_completion_tokens: int = -1
+
+    def set_max_total_completion_tokens(self, max_total_completion_tokens: int) -> None:
+        """Set the maximum total completion tokens for this environment."""
+        self.max_total_completion_tokens = max_total_completion_tokens
+
+    def mark_timed_out(self, state: State) -> None:
+        state["timed_out"] = True
+        state["is_completed"] = True
+        state["stop_condition"] = "timeout_reached"
 
     # -- abstract: subclass must implement -----------------------------------
 
@@ -227,6 +242,15 @@ class MultiAgentEnv(vf.Environment):
             return False
         return self.schedule.current_slot(kernel) is None
 
+    @vf.stop(priority=60)
+    async def max_total_completion_tokens_reached(self, state: State) -> bool:
+        if self.max_total_completion_tokens <= 0:
+            return False
+        usage = self.get_state_usage(state)
+        if usage is None:
+            return False
+        return usage["output_tokens"] >= self.max_total_completion_tokens
+
     @vf.stop(priority=10)
     async def prompt_too_long(self, state: State) -> bool:
         return state.get("prompt_too_long", False)
@@ -243,8 +267,9 @@ class MultiAgentEnv(vf.Environment):
         generation: vf.MemberGenerationPlan | None = None,
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args, generation)
-        state["timing"].generation.start = time.time()
-        try:
+
+        async def rollout_loop() -> None:
+            state["timing"].generation.start = time.time()
             state["_kernel"] = KernelState(slot_index=0)
 
             while not await self.is_completed(state):
@@ -262,11 +287,17 @@ class MultiAgentEnv(vf.Environment):
                 except vf.Error as e:
                     state["error"] = e
 
-            await self.render_completion(state)
-            return state
+        try:
+            await asyncio.wait_for(rollout_loop(), timeout=self.timeout_seconds)
+        except asyncio.TimeoutError:
+            self.mark_timed_out(state)
         finally:
-            state["timing"].generation.end = time.time()
-            await self.cleanup(state)
+            try:
+                await self.render_completion(state)
+            finally:
+                state["timing"].generation.end = time.time()
+                await self.cleanup(state)
+        return state
 
     @final
     async def _run_sequential_slot(self, state: State, slot: TurnSlot) -> None:

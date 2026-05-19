@@ -88,6 +88,7 @@ class TestEnvironmentBase:
             rubric=Rubric(),
         )
         assert env.message_type == "chat"
+        assert env.is_multi_agent is False
         assert isinstance(env.parser, Parser)
         assert isinstance(env.rubric, Rubric)
 

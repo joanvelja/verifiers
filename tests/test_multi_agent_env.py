@@ -1,3 +1,4 @@
+import asyncio
 import json
 from typing import Any
 
@@ -16,6 +17,7 @@ from verifiers.types import (
     ResponseMessage,
     SamplingArgs,
     State,
+    Usage,
 )
 
 
@@ -104,6 +106,57 @@ class _MetricClient(_RecordingClient):
         )
 
 
+class _UsageClient(_RecordingClient):
+    def __init__(self, *, completion_tokens: int) -> None:
+        super().__init__()
+        self.completion_tokens = completion_tokens
+
+    async def get_response(
+        self,
+        prompt: Messages,
+        model: str,
+        sampling_args: SamplingArgs,
+        tools=None,
+        **kwargs: Any,
+    ) -> Response:
+        response = await super().get_response(
+            prompt, model, sampling_args, tools=tools, **kwargs
+        )
+        response.usage = Usage(
+            prompt_tokens=1,
+            reasoning_tokens=0,
+            completion_tokens=self.completion_tokens,
+            total_tokens=1 + self.completion_tokens,
+        )
+        return response
+
+
+class _SlowClient(_RecordingClient):
+    def __init__(self, *, delay_seconds: float) -> None:
+        super().__init__()
+        self.delay_seconds = delay_seconds
+        self.cancelled_members: set[str] = set()
+
+    async def get_response(
+        self,
+        prompt: Messages,
+        model: str,
+        sampling_args: SamplingArgs,
+        tools=None,
+        **kwargs: Any,
+    ) -> Response:
+        member_id = kwargs.get("member_id")
+        try:
+            await asyncio.sleep(self.delay_seconds)
+        except asyncio.CancelledError:
+            if isinstance(member_id, str):
+                self.cancelled_members.add(member_id)
+            raise
+        return await super().get_response(
+            prompt, model, sampling_args, tools=tools, **kwargs
+        )
+
+
 class _MemberRoutingClient(_RecordingClient):
     def __init__(self, learner_by_example: dict[str, str]) -> None:
         super().__init__()
@@ -178,6 +231,8 @@ async def test_simultaneous_slots_pass_member_scoped_prefix_candidates() -> None
         score_rollouts=False,
     )
     client = _RecordingClient()
+
+    assert env.is_multi_agent is True
 
     await env.rollout(
         {
@@ -676,3 +731,70 @@ async def test_failed_simultaneous_slot_does_not_leak_branch_metrics() -> None:
     assert state["error"] is not None
     assert "client/test_metric" not in state["metrics"]
     assert state["trajectory"] == []
+
+
+@pytest.mark.asyncio
+async def test_max_total_completion_tokens_stops_multi_agent_rollout() -> None:
+    env = _TwoRoundSimultaneousEnv(
+        schedule=StaticSchedule(
+            (
+                TurnSlot(slot_id=0, agents=("agent_a",), phase="round"),
+                TurnSlot(slot_id=1, agents=("agent_a",), phase="round"),
+                TurnSlot(slot_id=2, agents=("agent_a",), phase="round"),
+            )
+        ),
+        members=["agent_a"],
+        dataset=lambda: None,
+        score_rollouts=False,
+    )
+    env.set_max_total_completion_tokens(3)
+    client = _UsageClient(completion_tokens=2)
+
+    state = await env.rollout(
+        {
+            "prompt": [{"role": "user", "content": "question"}],
+            "answer": "answer",
+            "example_id": "completion-token-limit",
+        },
+        client,
+        "test-model",
+        {},
+    )
+
+    assert len(client.calls) == 2
+    assert len(state["trajectory"]) == 2
+    assert state["is_completed"] is True
+    assert state["stop_condition"] == "max_total_completion_tokens_reached"
+    assert state["usage"]["output_tokens"] == 4.0
+
+
+@pytest.mark.asyncio
+async def test_timeout_cancels_simultaneous_slot_without_partial_commit() -> None:
+    env = _TwoRoundSimultaneousEnv(
+        schedule=StaticSchedule(
+            (TurnSlot(slot_id=0, agents=("agent_a", "agent_b"), phase="round"),)
+        ),
+        members=["agent_a", "agent_b"],
+        dataset=lambda: None,
+        score_rollouts=False,
+        timeout_seconds=0.01,
+    )
+    client = _SlowClient(delay_seconds=1.0)
+
+    state = await env.rollout(
+        {
+            "prompt": [{"role": "user", "content": "question"}],
+            "answer": "answer",
+            "example_id": "simultaneous-timeout",
+        },
+        client,
+        "test-model",
+        {},
+    )
+
+    assert state["timed_out"] is True
+    assert state["is_completed"] is True
+    assert state["stop_condition"] == "timeout_reached"
+    assert state["trajectory"] == []
+    assert state["completion"] == []
+    assert client.cancelled_members == {"agent_a", "agent_b"}
