@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import ContextVar
 from copy import deepcopy
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
@@ -33,7 +34,7 @@ from verifiers.utils.client_utils import (
     resolve_client_config,
     resolve_client_configs,
 )
-from verifiers.utils.eval_utils import filter_inputs
+from verifiers.utils.data_utils import canonical_example_id
 from verifiers.utils.path_utils import is_valid_eval_results_path
 from verifiers.utils.serve_utils import get_free_port
 from verifiers.utils.thread_utils import scale_executors
@@ -42,6 +43,7 @@ if TYPE_CHECKING:
     from datasets import Dataset
 
 import verifiers as vf
+from verifiers.envs.request_context import ModelRequestContext
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
 from verifiers.serve import EnvClient
@@ -50,7 +52,10 @@ from verifiers.types import (
     DatasetBuilder,
     GenerateMetadata,
     GenerateOutputs,
+    GenerationPlan,
+    GenerationTarget,
     LogCallback,
+    MemberGenerationPlan,
     Messages,
     MessageType,
     ProgressCallback,
@@ -88,6 +93,9 @@ from verifiers.utils.save_utils import (
 from verifiers.utils.usage_utils import StateUsageTracker
 
 _MESSAGE_TYPE_UNSET = object()
+_CURRENT_MEMBER_GENERATION: ContextVar[MemberGenerationPlan | None] = ContextVar(
+    "_CURRENT_MEMBER_GENERATION", default=None
+)
 
 
 class Environment(ABC):
@@ -153,6 +161,7 @@ class Environment(ABC):
         self.env_client: EnvClient | None = None
         self.env_server_process: BaseProcess | None = None
         self.death_pipe_writer: Connection | None = None
+        self._generation_client_cache: dict[str, Client] = {}
 
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
@@ -480,6 +489,7 @@ class Environment(ABC):
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
+        request_context: ModelRequestContext | None = None,
     ) -> Response:
         """
         Get model response for a given prompt (chat or completion).
@@ -516,20 +526,42 @@ class Environment(ABC):
             )
             return client, model, tool_defs, sampling_args
 
+        member_id = request_context.member_id if request_context is not None else None
+        generation_target = self._generation_target_for_member(state, member_id)
+        if generation_target is not None:
+            client = self._generation_client_for(generation_target)
+            model = generation_target.model
+            sampling_args = dict(generation_target.sampling_args)
+
         client, model, tool_defs, sampling_args = resolve_optional_args(
             client, model, tool_defs, sampling_args
         )
 
-        self._get_usage_tracker(state, create_if_missing=True)
+        request_kwargs: dict[str, Any] = {"state": state}
+        if member_id is not None:
+            request_kwargs["member_id"] = member_id
+        if (
+            request_context is not None
+            and request_context.prefix_candidate_indices is not None
+        ):
+            request_kwargs["prefix_candidate_indices"] = (
+                request_context.prefix_candidate_indices
+            )
 
         response = await client.get_response(
             prompt=prompt,
             model=model,
             tools=tool_defs,
             sampling_args=sampling_args,
-            state=state,
+            **request_kwargs,
         )
-        self.increment_state_usage_from_response(state, response)
+        tracker = (
+            request_context.usage_tracker
+            if request_context is not None and request_context.usage_tracker is not None
+            else self._get_usage_tracker(state, create_if_missing=True)
+        )
+        assert tracker is not None
+        tracker.increment_from_response(response)
 
         return response
 
@@ -551,8 +583,12 @@ class Environment(ABC):
         state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
+        rollout_id = state_input.get("rollout_id")
         state_task = flatten_task_input(state_input)
-        state_input = cast(RolloutInput, state_task)
+        state_task.pop("rollout_id", None)
+        state_input = cast(RolloutInput, dict(state_task))
+        if rollout_id is not None:
+            state_input["rollout_id"] = rollout_id
         state = State(input=state_input)
         state["task"] = state_task
 
@@ -564,6 +600,7 @@ class Environment(ABC):
         state["client"] = resolve_client(client)
         state["model"] = model
         state["sampling_args"] = sampling_args
+        state["member_generation"] = _CURRENT_MEMBER_GENERATION.get()
         state["is_completed"] = False
         state["is_truncated"] = False
 
@@ -630,9 +667,62 @@ class Environment(ABC):
         """
         Tear down environment resources.
         """
+        if self._generation_client_cache:
+            await asyncio.gather(
+                *(client.close() for client in self._generation_client_cache.values()),
+            )
+            self._generation_client_cache.clear()
         await self.rubric.teardown()
         for handler in self._teardown_handlers:
             await handler()
+
+    def _generation_client_for(self, target: GenerationTarget) -> Client:
+        resolved = resolve_client_config(target.client)
+        key = resolved.model_dump_json()
+        client = self._generation_client_cache.get(key)
+        if client is None:
+            client = resolve_client(resolved)
+            self._generation_client_cache[key] = client
+        return client
+
+    @staticmethod
+    def _coerce_member_generation_plan(raw: object) -> MemberGenerationPlan | None:
+        if raw is None:
+            return None
+        if isinstance(raw, MemberGenerationPlan):
+            return raw
+        return MemberGenerationPlan.model_validate(raw)
+
+    def _generation_target_for_member(
+        self, state: State, member_id: str | None
+    ) -> GenerationTarget | None:
+        if member_id is None:
+            return None
+        raw_plan = state.get("member_generation")
+        plan = self._coerce_member_generation_plan(raw_plan)
+        if plan is None:
+            return None
+        if plan is not raw_plan:
+            state["member_generation"] = plan
+        return plan.target_for(member_id)
+
+    @staticmethod
+    def _generation_metadata(target: GenerationTarget) -> dict[str, Any]:
+        return {
+            "client": target.client.model_dump(
+                mode="python", exclude={"endpoint_configs"}
+            ),
+            "model": target.model,
+            "sampling_args": dict(target.sampling_args),
+        }
+
+    def generation_metadata_for_member(
+        self, state: State, member_id: str | None
+    ) -> dict[str, Any] | None:
+        target = self._generation_target_for_member(state, member_id)
+        if target is None:
+            return None
+        return self._generation_metadata(target)
 
     async def _render_stop(self, state: State, condition, **kwargs) -> bool:
         if await maybe_call_with_named_args(
@@ -667,13 +757,18 @@ class Environment(ABC):
         client: Client,
         model: str,
         sampling_args: SamplingArgs,
+        generation: MemberGenerationPlan | None = None,
     ) -> State:
-        state = await self.rollout(
-            input,
-            client,
-            model,
-            sampling_args,
-        )
+        token = _CURRENT_MEMBER_GENERATION.set(generation)
+        try:
+            state = await self.rollout(
+                input,
+                client,
+                model,
+                sampling_args,
+            )
+        finally:
+            _CURRENT_MEMBER_GENERATION.reset(token)
 
         state["timing"].scoring.start = time.time()
         if self.score_rollouts:
@@ -685,21 +780,154 @@ class Environment(ABC):
         await self.rubric.cleanup(state)
         return state
 
+    @staticmethod
+    def _group_generations(
+        generation: GenerationPlan | None, group_size: int
+    ) -> list[MemberGenerationPlan | None]:
+        if generation is None:
+            return [None for _ in range(group_size)]
+        if isinstance(generation, MemberGenerationPlan):
+            return [generation for _ in range(group_size)]
+        if len(generation) != group_size:
+            raise ValueError(
+                f"run_group generation list length {len(generation)} does not match group size {group_size}"
+            )
+        plans = cast(list[MemberGenerationPlan | None], list(generation))
+        if any(plan is None for plan in plans) and any(
+            plan is not None for plan in plans
+        ):
+            raise ValueError("run_group generation plans must be all-or-none")
+        return plans
+
+    @staticmethod
+    def _filter_inputs_and_generations(
+        inputs: list[RolloutInput],
+        outputs: list[RolloutOutput],
+        rollouts_per_example: int,
+        generations: list[MemberGenerationPlan | None],
+    ) -> tuple[list[RolloutInput], list[MemberGenerationPlan | None]]:
+        items_by_example_id: dict[
+            int | str, list[tuple[RolloutInput, MemberGenerationPlan | None]]
+        ] = defaultdict(list)
+        outputs_by_example_id: dict[int | str, list[RolloutOutput]] = defaultdict(list)
+        for rollout_input, plan in zip(inputs, generations, strict=True):
+            items_by_example_id[rollout_input["example_id"]].append(
+                (rollout_input, plan)
+            )
+        for output in outputs:
+            outputs_by_example_id[output["example_id"]].append(output)
+
+        filtered_inputs: list[RolloutInput] = []
+        filtered_generations: list[MemberGenerationPlan | None] = []
+        for example_id, items in items_by_example_id.items():
+            rollouts_left = rollouts_per_example - len(
+                outputs_by_example_id[example_id]
+            )
+            if rollouts_left <= 0:
+                continue
+            remaining = items[:rollouts_left]
+            filtered_inputs.extend(rollout_input for rollout_input, _ in remaining)
+            filtered_generations.extend(plan for _, plan in remaining)
+        return filtered_inputs, filtered_generations
+
+    @staticmethod
+    def _with_rollout_ids(inputs: list[RolloutInput]) -> list[RolloutInput]:
+        counts: dict[int | str, int] = defaultdict(int)
+        with_ids: list[RolloutInput] = []
+        for item in inputs:
+            rollout_input = cast(RolloutInput, dict(item))
+            example_id = rollout_input["example_id"]
+            rollout_idx = counts[example_id]
+            counts[example_id] += 1
+            rollout_input["rollout_id"] = (
+                f"{canonical_example_id(example_id)}:{rollout_idx}"
+            )
+            with_ids.append(rollout_input)
+        return with_ids
+
+    @staticmethod
+    def _generation_needs_rollout_identity(
+        generations: list[MemberGenerationPlan | None],
+    ) -> bool:
+        concrete = [generation for generation in generations if generation is not None]
+        if len(concrete) <= 1:
+            return False
+        first = concrete[0]
+        return any(generation != first for generation in concrete[1:])
+
+    @staticmethod
+    def _filter_resume_items(
+        inputs: list[RolloutInput],
+        outputs: list[RolloutOutput],
+        rollouts_per_example: int,
+        generations: list[MemberGenerationPlan | None],
+    ) -> tuple[list[RolloutInput], list[MemberGenerationPlan | None]]:
+        if outputs and all(output.get("rollout_id") for output in outputs):
+            completed = {str(output["rollout_id"]) for output in outputs}
+            filtered_inputs: list[RolloutInput] = []
+            filtered_generations: list[MemberGenerationPlan | None] = []
+            for rollout_input, generation in zip(inputs, generations, strict=True):
+                if str(rollout_input["rollout_id"]) in completed:
+                    continue
+                filtered_inputs.append(rollout_input)
+                filtered_generations.append(generation)
+            return filtered_inputs, filtered_generations
+
+        if outputs and Environment._generation_needs_rollout_identity(generations):
+            raise ValueError(
+                "Cannot resume list-valued generation plans from outputs without "
+                "rollout_id. Rerun without resume or use results saved by a "
+                "version that records rollout_id."
+            )
+
+        return Environment._filter_inputs_and_generations(
+            inputs,
+            outputs,
+            rollouts_per_example,
+            generations,
+        )
+
+    @staticmethod
+    def _generation_for_group(
+        generations: list[MemberGenerationPlan | None],
+    ) -> GenerationPlan | None:
+        concrete = [generation for generation in generations if generation is not None]
+        if not concrete:
+            return None
+        if len(concrete) != len(generations):
+            raise ValueError("run_group generation plans must be all-or-none")
+        first = concrete[0]
+        if all(generation == first for generation in concrete):
+            return first
+        return concrete
+
     async def _run_group_states(
         self,
         group_inputs: list[RolloutInput],
         client: Client,
         model: str,
         sampling_args: SamplingArgs,
+        generation: GenerationPlan | None = None,
     ) -> list[State]:
+        generations = self._group_generations(generation, len(group_inputs))
+
+        async def run_one(
+            rollout_input: RolloutInput, plan: MemberGenerationPlan | None
+        ) -> State:
+            token = _CURRENT_MEMBER_GENERATION.set(plan)
+            try:
+                return await self.rollout(
+                    rollout_input,
+                    client,
+                    model,
+                    sampling_args,
+                )
+            finally:
+                _CURRENT_MEMBER_GENERATION.reset(token)
+
         rollout_tasks = [
-            self.rollout(
-                input,
-                client,
-                model,
-                sampling_args,
-            )
-            for input in group_inputs
+            run_one(rollout_input, plan)
+            for rollout_input, plan in zip(group_inputs, generations, strict=True)
         ]
         group_states = await asyncio.gather(*rollout_tasks)
 
@@ -729,6 +957,7 @@ class Environment(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        generation: MemberGenerationPlan | None = None,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
@@ -742,6 +971,15 @@ class Environment(ABC):
                 raise ValueError(
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
+            if generation is None:
+                return await env_client.run_rollout(
+                    input,
+                    resolved_client_config,
+                    model,
+                    sampling_args,
+                    max_retries,
+                    state_columns,
+                )
             return await env_client.run_rollout(
                 input,
                 resolved_client_config,
@@ -749,6 +987,7 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                generation=generation,
             )
 
         resolved_client = resolve_client(client)
@@ -759,6 +998,7 @@ class Environment(ABC):
                 resolved_client,
                 model,
                 sampling_args,
+                generation,
             )
 
         state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
@@ -775,6 +1015,7 @@ class Environment(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        generation: GenerationPlan | None = None,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
@@ -789,6 +1030,15 @@ class Environment(ABC):
                 raise ValueError(
                     f"client must be have type ClientConfig in server mode, got {type(client)}"
                 )
+            if generation is None:
+                return await env_client.run_group(
+                    group_inputs,
+                    resolved_client_config,
+                    model,
+                    sampling_args,
+                    max_retries,
+                    state_columns,
+                )
             return await env_client.run_group(
                 group_inputs,
                 resolved_client_config,
@@ -796,6 +1046,7 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                generation=generation,
             )
 
         resolved_client = resolve_client(client)
@@ -806,6 +1057,7 @@ class Environment(ABC):
                 resolved_client,
                 model,
                 sampling_args,
+                generation,
             )
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
@@ -834,6 +1086,7 @@ class Environment(ABC):
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
+        generation: GenerationPlan | None = None,
     ) -> GenerateOutputs:
         """
         Generate rollouts for a set of inputs.
@@ -920,6 +1173,7 @@ class Environment(ABC):
             raw_inputs = cast(list[RolloutInput], inputs.to_list())
         elif isinstance(inputs, list):
             raw_inputs = inputs
+        raw_inputs = self._with_rollout_ids(raw_inputs)
 
         # set up semaphores
         sem = await maybe_semaphore(max_concurrent)
@@ -934,6 +1188,7 @@ class Environment(ABC):
         total_rollouts = len(raw_inputs)
         num_examples = len(set([i["example_id"] for i in raw_inputs]))
         rollouts_per_example = total_rollouts // num_examples if num_examples > 0 else 0
+        raw_generations = self._group_generations(generation, len(raw_inputs))
         builder = GenerateOutputsBuilder(
             env_id=self.env_id,
             env_args=self.env_args,
@@ -996,8 +1251,11 @@ class Environment(ABC):
                 # so subsequent appends start from a valid JSONL boundary.
                 truncate_malformed_trailing_line(results_path / "results.jsonl")
                 builder.add_outputs(outputs)
-                filtered_inputs = filter_inputs(
-                    raw_inputs, outputs, rollouts_per_example
+                (
+                    filtered_inputs,
+                    filtered_generations,
+                ) = self._filter_resume_items(
+                    raw_inputs, outputs, rollouts_per_example, raw_generations
                 )
                 if not filtered_inputs:
                     on_log(
@@ -1009,6 +1267,7 @@ class Environment(ABC):
                 )
             else:
                 filtered_inputs = raw_inputs
+                filtered_generations = raw_generations
 
             if save_results:
                 on_log(f"Saving results to {builder.results_path}")
@@ -1018,7 +1277,9 @@ class Environment(ABC):
                 # create tasks based on mode
                 if independent_scoring:
                     on_start(raw_inputs, filtered_inputs)
-                    for i, rollout_input in enumerate(filtered_inputs):
+                    for i, (rollout_input, rollout_generation) in enumerate(
+                        zip(filtered_inputs, filtered_generations, strict=True)
+                    ):
                         task = asyncio.create_task(
                             with_sem(
                                 sem,
@@ -1029,19 +1290,35 @@ class Environment(ABC):
                                     sampling_args,
                                     max_retries=max_retries,
                                     state_columns=state_columns,
+                                    generation=rollout_generation,
                                 ),
                             ),
                         )
                         tasks[task] = i
                 else:
-                    group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
-                    for rollout_input in filtered_inputs:
+                    group_inputs: dict[int | str, list[RolloutInput]] = defaultdict(
+                        list
+                    )
+                    group_generations: dict[
+                        int | str, list[MemberGenerationPlan | None]
+                    ] = defaultdict(list)
+                    for rollout_input, rollout_generation in zip(
+                        filtered_inputs, filtered_generations, strict=True
+                    ):
                         example_id = rollout_input["example_id"]
                         group_inputs[example_id].append(rollout_input)
+                        group_generations[example_id].append(rollout_generation)
                     filtered_group_inputs = list(group_inputs.values())
+                    filtered_group_generations = list(group_generations.values())
                     on_start(raw_inputs, filtered_group_inputs)
 
-                    for i, group_input in enumerate(filtered_group_inputs):
+                    for i, (group_input, group_generation) in enumerate(
+                        zip(
+                            filtered_group_inputs,
+                            filtered_group_generations,
+                            strict=True,
+                        )
+                    ):
                         # For grouped scoring, keep each group on one endpoint so
                         # rollouts in the same group can benefit from shared KV cache.
                         group_client = get_client_for_group()
@@ -1055,6 +1332,9 @@ class Environment(ABC):
                                     sampling_args,
                                     max_retries=max_retries,
                                     state_columns=state_columns,
+                                    generation=self._generation_for_group(
+                                        group_generation
+                                    ),
                                 ),
                             ),
                         )

@@ -12,10 +12,12 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from verifiers.types import (
+    RESERVED_ROLLOUT_OUTPUT_KEYS,
     ClientConfig,
     ErrorInfo,
     GenerateMetadata,
     GenerateOutputs,
+    MARScore,
     Response,
     RolloutOutput,
     SamplingArgs,
@@ -46,6 +48,13 @@ from verifiers.utils.usage_utils import (
 from verifiers.utils.version_utils import get_version_info
 
 logger = logging.getLogger(__name__)
+
+_STANDARD_STATE_COLUMNS_ALLOWED_BY_NAME = frozenset(
+    {"trajectory", "sampling_args", "trajectory_id"}
+)
+_RESERVED_STATE_COLUMN_KEYS = (
+    RESERVED_ROLLOUT_OUTPUT_KEYS - _STANDARD_STATE_COLUMNS_ALLOWED_BY_NAME
+)
 
 
 def is_json_serializable(value: object) -> bool:
@@ -220,6 +229,7 @@ def state_to_output(
 
     output = RolloutOutput(
         example_id=state.get("example_id", 0),
+        task=state.get("task", ""),
         prompt=state.get("prompt"),
         completion=state.get("completion"),
         answer=state.get("answer", ""),
@@ -232,6 +242,9 @@ def state_to_output(
         stop_condition=state.get("stop_condition", None),
         metrics=state.get("metrics", {}),
         tool_defs=state.get("tool_defs"),
+        sampling_args=state.get("sampling_args") or {},
+        trajectory_id=state.get("trajectory_id", ""),
+        rollout_id=state.get("rollout_id", ""),
     )
     usage = _extract_state_token_usage(state)
     if usage is not None:
@@ -285,12 +298,33 @@ def state_to_output(
         output.pop("answer")
     if "info" in output and not output["info"]:
         output.pop("info")
-    # flatten metrics to top-level keys (backwards compatibility)
-    state_metrics = state.get("metrics") or {}
-    for k, v in state_metrics.items():
-        output[k] = v
+    mar = state.get("mar_score")
+    if mar is not None:
+        if not isinstance(mar, MARScore):
+            mar = MARScore.model_validate(mar)
+        output["mar_score"] = mar.model_dump(exclude_none=True)
+        output["reward"] = mar.episode_scalar
+        flat_metrics = mar.to_metrics_flat()
+        for key, value in flat_metrics.items():
+            output[key] = value
+        output["metrics"] = dict(flat_metrics)
+    else:
+        # flatten metrics to top-level keys (backwards compatibility)
+        state_metrics = state.get("metrics") or {}
+        for k, v in state_metrics.items():
+            output[k] = v
+        if output.get("metrics") is None:
+            output["metrics"] = {}
     # add state columns (must be serializable)
     for col in state_columns or []:
+        if col in _STANDARD_STATE_COLUMNS_ALLOWED_BY_NAME and col != "trajectory":
+            continue
+        if col in _RESERVED_STATE_COLUMN_KEYS:
+            raise ValueError(
+                f"state_columns value '{col}' conflicts with a standard output "
+                "field. Standard fields are saved automatically; choose a "
+                "different state column name."
+            )
         value = state.get(col)
         if col == "trajectory":
             # Renderer multimodal rollouts accumulate mm_data on every step

@@ -2,7 +2,7 @@ import importlib
 import importlib.resources as resources
 import json
 from collections.abc import Iterable
-from importlib.abc import Traversable
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import cast
 

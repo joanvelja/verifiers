@@ -49,7 +49,6 @@ from verifiers.types import (
 )
 from verifiers.utils.client_utils import setup_anthropic_client
 
-
 ANTHROPIC_ADAPTIVE_THINKING_MODELS = {
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -360,6 +359,8 @@ class AnthropicMessagesClient(
 
         # Remove internal framework keys not recognized by the Anthropic SDK
         kwargs.pop("state", None)
+        kwargs.pop("member_id", None)
+        kwargs.pop("prefix_candidate_indices", None)
 
         if tools:
             return await self.client.messages.create(

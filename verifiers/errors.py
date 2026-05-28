@@ -66,3 +66,15 @@ class BrowserSandboxError(SandboxError):
     """Used to catch errors while interacting with browser sandboxes."""
 
     pass
+
+
+class KernelProtocolError(Error):
+    """Raised by the multi-agent kernel on protocol violations."""
+
+    pass
+
+
+class ContentParseError(KernelProtocolError):
+    """Raised when protocol channel markup cannot be parsed."""
+
+    pass

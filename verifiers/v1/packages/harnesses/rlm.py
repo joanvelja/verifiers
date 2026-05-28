@@ -11,7 +11,7 @@ import shlex
 import tarfile
 import textwrap
 from collections.abc import Callable, Mapping
-from importlib.abc import Traversable
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import cast
 

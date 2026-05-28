@@ -18,6 +18,7 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAITool,
     handle_openai_overlong_prompt,
 )
+from verifiers.clients.trajectory_utils import iter_member_candidate_steps
 from verifiers.types import SamplingArgs, State
 from verifiers.utils.client_utils import (
     post_chat_completion_with_routed_experts_sidecar,
@@ -88,6 +89,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         sampling_args = normalize_sampling_args(sampling_args)
         state = cast(State, kwargs.pop("state"))
         extra_headers = kwargs.pop("extra_headers", None)
+        member_id = kwargs.pop("member_id", None)
+        prefix_candidate_indices = kwargs.pop("prefix_candidate_indices", None)
         # Use standard /chat/completions for: (1) first turn (no prior tokens
         # to stitch), or (2) conversations that contain multimodal content in
         # any turn.  vLLM ≤0.16's /tokenize doesn't run the multimodal
@@ -113,8 +116,18 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         chat_template_kwargs = sampling_args["extra_body"].get(
             "chat_template_kwargs", {}
         )
+        prompt_id_kwargs: dict[str, Any] = {
+            "chat_template_kwargs": chat_template_kwargs
+        }
+        if member_id is not None:
+            prompt_id_kwargs["member_id"] = member_id
+        if prefix_candidate_indices is not None:
+            prompt_id_kwargs["prefix_candidate_indices"] = prefix_candidate_indices
         prompt_ids = await self.get_prompt_ids(
-            state, prompt, tools, chat_template_kwargs=chat_template_kwargs
+            state,
+            prompt,
+            tools,
+            **prompt_id_kwargs,
         )
         if prompt_ids is None:
             # Reaching this branch means we have a non-empty trajectory but
@@ -149,6 +162,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
         chat_template_kwargs: dict | None = None,
+        member_id: str | None = None,
+        prefix_candidate_indices: tuple[int, ...] | None = None,
     ) -> list[int] | None:
         """
         Build prompt_ids for the next turn by stitching engine tokens with
@@ -188,7 +203,15 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             normalized_prompt_messages = normalize_for_comparison(prompt_messages)
             best_prefix_len = -1
             best_step = None
-            for step in reversed(state["trajectory"]):
+            trajectory = state["trajectory"]
+            candidate_steps = iter_member_candidate_steps(
+                trajectory,
+                member_id=member_id,
+                fallback_member_id=state.get("trajectory_id"),
+                prefix_candidate_indices=prefix_candidate_indices,
+            )
+
+            for step in candidate_steps:
                 step_tokens = step["tokens"]
                 if step_tokens is None:
                     continue

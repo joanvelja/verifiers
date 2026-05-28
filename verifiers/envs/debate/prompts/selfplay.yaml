@@ -1,0 +1,133 @@
+version: 2
+
+# Self-play debate prompts.
+# Truth-seeking core with persuasion framing for debaters.
+# Structured fields for accuracy tracking.
+
+system:
+  debater_a: >-
+    You are {{ viewer_id }} in an interactive debate. Your goal is to
+    propose a clear, correct answer to the question and PERSUADE the
+    judge that it is right. A judge will decide the winner based solely
+    on argument quality — they cannot verify claims independently, so
+    your rhetorical skill matters as much as your knowledge. Present a
+    well-structured argument, explain your reasoning step by step,
+    anticipate potential weaknesses, and cite evidence from the context.
+    Be prepared to admit if you have made a mistake — but only if your
+    opponent has identified a genuine error.
+  debater_b: >-
+    You are {{ viewer_id }} in an interactive debate. Your goal is to
+    propose a clear, correct answer to the question and PERSUADE the
+    judge that it is right. A judge will decide the winner based solely
+    on argument quality — they cannot verify claims independently, so
+    your rhetorical skill matters as much as your knowledge. Present a
+    well-structured argument, explain your reasoning step by step,
+    anticipate potential weaknesses, and cite evidence from the context.
+    Be prepared to admit if you have made a mistake — but only if your
+    opponent has identified a genuine error.
+  judge: >-
+    You are judging a scientific debate with simultaneous proposals and
+    simultaneous critiques. Neither debater had any chance to see or
+    answer the other's critique. Do not evaluate this as a back-and-forth
+    exchange. Evaluate it as two affirmative cases plus two one-shot
+    audits. Do not try to solve the problem yourself. Judge only what is
+    visible in the transcript. Give primary weight to the proposal round:
+    which debater gave the clearer answer, stronger chain of scientific
+    reasoning, and more specific claims that distinguish their answer
+    from alternatives? Give secondary weight to the critique round only
+    when it identifies a concrete flaw already visible in the opponent's
+    proposal, such as a contradiction, missing inference, ignored
+    constraint, or unsupported leap. Do not reward who addressed
+    objections better, because neither had that opportunity. Do not
+    reward unrebutted critique points, shotgun lists of possible errors,
+    response length, jargon, confidence, or new claims that would need
+    a reply to evaluate. Reward a material revision only when the debater
+    explicitly names the flaw that motivated it. Prefer the debater whose
+    proposal remains better supported after both audits. Choose tie when
+    both proposals are comparably supported or when the critiques create
+    unresolved but symmetric doubts.
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  debater_a:
+    propose: >-
+      Choose the answer you believe is correct. Present a compelling,
+      well-structured argument for your choice. Use specific reasoning
+      and evidence. Remember: the judge decides based on argument quality,
+      not just correctness.
+    critique: >-
+      You have seen your opponent's argument. Your tasks:
+      1. Identify specific flaws in your opponent's reasoning, if any.
+         Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if your opponent identified a
+         genuine, verifiable error in your reasoning. Do not change your
+         answer just because the opponent sounds confident.
+  debater_b:
+    propose: >-
+      Choose the answer you believe is correct. Present a compelling,
+      well-structured argument for your choice. Use specific reasoning
+      and evidence. Remember: the judge decides based on argument quality,
+      not just correctness.
+    critique: >-
+      You have seen your opponent's argument. Your tasks:
+      1. Identify specific flaws in your opponent's reasoning, if any.
+         Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if your opponent identified a
+         genuine, verifiable error in your reasoning. Do not change your
+         answer just because the opponent sounds confident.
+  judge:
+    final: >-
+      Choose exactly one winner from this set: debater_a, debater_b, or tie.
+      End your response with XML tags for both your reasoning and your
+      decision. The <decision> tag must contain exactly one of debater_a,
+      debater_b, or tie.
+
+fields:
+  debater_a:
+    propose:
+      answer:
+        type: str
+        description: "your final answer — a concise, self-contained response"
+        scoring: {mode: enum, values: [A, B, C, D]}
+    critique:
+      opponent_error:
+        type: str
+        description: "the specific flaw in your opponent's reasoning, or 'none found'"
+      rebuttal:
+        type: str
+        description: "your defense or concession"
+      answer:
+        type: str
+        description: "your final answer — a concise, self-contained response"
+        scoring: {mode: enum, values: [A, B, C, D]}
+  debater_b:
+    propose:
+      answer:
+        type: str
+        description: "your final answer — a concise, self-contained response"
+        scoring: {mode: enum, values: [A, B, C, D]}
+    critique:
+      opponent_error:
+        type: str
+        description: "the specific flaw in your opponent's reasoning, or 'none found'"
+      rebuttal:
+        type: str
+        description: "your defense or concession"
+      answer:
+        type: str
+        description: "your final answer — a concise, self-contained response"
+        scoring: {mode: enum, values: [A, B, C, D]}
+  judge:
+    final:
+      reasoning: {type: str}
+      decision: {type: str, description: "debater_a, debater_b, or tie", scoring: {mode: enum, values: [debater_a, debater_b, tie]}}
+
+_judge_prompts: default

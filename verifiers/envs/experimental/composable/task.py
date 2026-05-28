@@ -27,7 +27,7 @@ A **SandboxSpec** describes sandbox requirements (image, CPU, memory, etc.).
 import importlib
 import importlib.resources as resources
 from dataclasses import dataclass
-from importlib.abc import Traversable
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Any, Callable
 
@@ -223,7 +223,7 @@ class TaskSet:
 
         Returns a mapping of ``{logical_name: local_source}`` where
         *logical_name* is a short label (e.g. ``"skills"``) and
-        *local_source* is a ``Path`` or ``importlib.abc.Traversable``
+        *local_source* is a ``Path`` or ``importlib.resources.abc.Traversable``
         pointing to a local directory.
 
         The *logical_name* is resolved to a sandbox path by the harness's

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 # early imports to avoid circular dependencies
 from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
+from .multi_agent_bridge import rollout_to_member_rollouts  # noqa # isort: skip
 from .decorators import (  # noqa # isort: skip
     advantage,
     cleanup,
@@ -58,6 +59,7 @@ __all__ = [
     "MaybeThinkParser",
     "XMLParser",
     "Rubric",
+    "MultiAgentRubric",
     "JudgeRubric",
     "RubricGroup",
     "MathRubric",
@@ -90,6 +92,7 @@ __all__ = [
     "UserConfig",
     "SignalConfig",
     "Environment",
+    "MultiAgentEnv",
     "MultiTurnEnv",
     "SingleTurnEnv",
     "PythonEnv",
@@ -133,6 +136,7 @@ __all__ = [
     "MissingKeyError",
     "get_model",
     "get_model_and_tokenizer",
+    "rollout_to_member_rollouts",
     "RLConfig",
     "RLTrainer",
     "GRPOTrainer",
@@ -157,12 +161,14 @@ _LAZY_IMPORTS = {
         "verifiers.clients.openai_responses_client:OpenAIResponsesClient"
     ),
     "Environment": "verifiers.envs.environment:Environment",
+    "MultiAgentEnv": "verifiers.envs.multi_agent_env:MultiAgentEnv",
     "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
     "SingleTurnEnv": "verifiers.envs.singleturn_env:SingleTurnEnv",
     "StatefulToolEnv": "verifiers.envs.stateful_tool_env:StatefulToolEnv",
     "ToolEnv": "verifiers.envs.tool_env:ToolEnv",
     "EnvGroup": "verifiers.envs.env_group:EnvGroup",
     "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
+    "MultiAgentRubric": "verifiers.rubrics.multi_agent_rubric:MultiAgentRubric",
     "load_environment": "verifiers.utils.env_utils:load_environment",
     "load_harness": "verifiers.utils.env_utils:load_harness",
     "load_taskset": "verifiers.utils.env_utils:load_taskset",
@@ -275,6 +281,7 @@ if TYPE_CHECKING:
     from .envs.integrations.openenv_env import OpenEnvEnv  # noqa: F401
     from .envs.integrations.reasoninggym_env import ReasoningGymEnv  # noqa: F401
     from .envs.integrations.textarena_env import TextArenaEnv  # noqa: F401
+    from .envs.multi_agent_env import MultiAgentEnv  # noqa: F401
     from .envs.multiturn_env import MultiTurnEnv  # noqa: F401
     from .envs.python_env import PythonEnv  # noqa: F401
     from .envs.sandbox_env import SandboxEnv  # noqa: F401
@@ -283,14 +290,15 @@ if TYPE_CHECKING:
     from .envs.tool_env import ToolEnv  # noqa: F401
     from .rubrics.judge_rubric import JudgeRubric  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+    from .rubrics.multi_agent_rubric import MultiAgentRubric  # noqa: F401
     from .utils.env_utils import (  # noqa: F401
         load_environment,
         load_harness,
         load_taskset,
     )
     from .v1 import (  # noqa: F401
-        Config,
         CallableConfig,
+        Config,
         ConfigData,
         ConfigMap,
         Env,

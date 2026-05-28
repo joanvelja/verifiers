@@ -6,7 +6,7 @@ from collections.abc import (
     MutableMapping,
     Sequence,
 )
-from importlib.abc import Traversable
+from importlib.resources.abc import Traversable
 from os import PathLike
 from typing import Literal, TypeAlias
 

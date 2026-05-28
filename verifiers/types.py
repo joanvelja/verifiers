@@ -13,8 +13,8 @@ from typing import (
     Literal,
     TypeAlias,
     TypeVar,
-    overload,
     cast,
+    overload,
 )
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
@@ -307,9 +307,10 @@ class BaseRolloutInput(TypedDict):
 
 class RolloutInput(BaseRolloutInput, total=False):
     # required: prompt, example_id
-    # optional: answer, info
+    # optional: answer, info, rollout_id
     answer: str
     info: Info | str
+    rollout_id: str
 
 
 class TimeSpan(CustomBaseModel):
@@ -394,12 +395,14 @@ class RolloutOutput(dict):
     Required fields: example_id, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
-                     token_usage
+                     token_usage, mar_score, sampling_args, trajectory_id,
+                     rollout_id
     Additional fields: arbitrary serializable state_columns
     """
 
     # Required fields
-    example_id: int
+    example_id: int | str
+    task: object
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -415,6 +418,24 @@ class RolloutOutput(dict):
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
     token_usage: TokenUsage
+    sampling_args: "SamplingArgs"
+    trajectory_id: str
+    rollout_id: str
+    mar_score: "MARScore"
+
+
+class MemberRollout(TypedDict):
+    """RolloutOutput-compatible dict with per-member multi-agent metadata."""
+
+    example_id: int | str
+    task: object
+    trajectory: list[TrajectoryStep]
+    tool_defs: NotRequired[list[Tool]]
+    sampling_args: dict[str, Any]
+    error: ErrorInfo | None
+    reward: float
+    episode_id: str
+    member_id: str
 
 
 _MISSING = object()
@@ -452,7 +473,7 @@ class StateForTaskDescriptor:
 class State(dict):
     for_task = StateForTaskDescriptor()
 
-    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info", "example_id", "rollout_id"]
     INTERNAL_KEYS = {"is_completed", "stop_condition", "is_truncated", "error"}
     RUNTIME_HANDLE_KEYS = {"runtime_id", "client_key"}
     ENDPOINT_HANDLE_KEYS = {
@@ -767,7 +788,7 @@ class State(dict):
                 },
             }
         )
-        for key in ("prompt", "answer", "info", "example_id"):
+        for key in ("prompt", "answer", "info", "example_id", "rollout_id"):
             if key in task:
                 state[key] = deepcopy(task[key])
         return state
@@ -778,20 +799,11 @@ class State(dict):
 
 def _internal_key_error(key: str) -> str:
     if key == "is_completed":
-        return (
-            "state['is_completed'] is framework-managed; use state.stop(...), "
-            "state['done'], or @vf.stop."
-        )
+        return "state['is_completed'] is framework-managed; use state.stop(...), state['done'], or @vf.stop."
     if key == "stop_condition":
-        return (
-            "state['stop_condition'] is framework-managed; use state.stop(...), "
-            "state['done'], or @vf.stop."
-        )
+        return "state['stop_condition'] is framework-managed; use state.stop(...), state['done'], or @vf.stop."
     if key == "is_truncated":
-        return (
-            "state['is_truncated'] is framework-managed; raise an overlong-prompt "
-            "error or let trajectory sync set it."
-        )
+        return "state['is_truncated'] is framework-managed; raise an overlong-prompt error or let trajectory sync set it."
     if key == "error":
         return "state['error'] is framework-managed; raise vf.Error instead."
     return f"state[{key!r}] is framework-managed."
@@ -831,7 +843,7 @@ def _v1_state_for_task(cls: type[State], task: Mapping[str, Any]) -> State:
     state._set_truncated(False, overwrite=True)
     state._set_stop_condition(None, overwrite=True)
     state._set_error(None)
-    for key in ("prompt", "info", "example_id"):
+    for key in ("prompt", "info", "example_id", "rollout_id"):
         if key in task:
             state[key] = deepcopy(task[key])
     return state
@@ -1004,6 +1016,89 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
+class MemberScore(CustomBaseModel):
+    """Per-member outcome of one multi-agent episode."""
+
+    member_id: str
+    reward: float
+    parse_error_count: int = 0
+    metrics: dict[str, float] = Field(default_factory=dict)
+
+
+RESERVED_ROLLOUT_OUTPUT_KEYS: frozenset[str] = frozenset(
+    {
+        "example_id",
+        "task",
+        "prompt",
+        "completion",
+        "reward",
+        "timing",
+        "is_completed",
+        "is_truncated",
+        "metrics",
+        "answer",
+        "info",
+        "error",
+        "stop_condition",
+        "trajectory",
+        "tool_defs",
+        "token_usage",
+        "mar_score",
+        "trajectory_id",
+        "sampling_args",
+        "error_chain",
+        "long_error_chain",
+    }
+)
+
+_RESERVED_FLAT_KEYS = RESERVED_ROLLOUT_OUTPUT_KEYS
+
+
+class MARScore(CustomBaseModel):
+    """Member-attributed reward and metrics for one multi-agent episode."""
+
+    members: list[MemberScore]
+    episode_scalar: float
+    episode_metrics: dict[str, float] = Field(default_factory=dict)
+    episode_categorical: dict[str, str | None] = Field(default_factory=dict)
+    episode_error: dict[str, str] | None = None
+
+    @field_validator("members")
+    @classmethod
+    def _validate_members(cls, value: list[MemberScore]) -> list[MemberScore]:
+        if not value:
+            raise ValueError("MARScore.members cannot be empty")
+        member_ids = [member.member_id for member in value]
+        if len(member_ids) != len(set(member_ids)):
+            raise ValueError(f"Duplicate member_id in MARScore: {member_ids}")
+        return value
+
+    def by_id(self) -> dict[str, MemberScore]:
+        return {member.member_id: member for member in self.members}
+
+    def to_metrics_flat(self) -> dict[str, float]:
+        output: dict[str, float] = {}
+        for key, value in self.episode_metrics.items():
+            if key in _RESERVED_FLAT_KEYS:
+                raise ValueError(
+                    f"MARScore.episode_metrics key {key!r} collides with a reserved RolloutOutput field"
+                )
+            output[key] = value
+        for member in self.members:
+            output[f"reward/{member.member_id}"] = member.reward
+            if member.parse_error_count:
+                output[f"parse_errors/{member.member_id}"] = float(
+                    member.parse_error_count
+                )
+            for key, value in member.metrics.items():
+                if key in _RESERVED_FLAT_KEYS:
+                    raise ValueError(
+                        f"MemberScore.metrics key {key!r} collides with a reserved RolloutOutput field"
+                    )
+                output[f"{key}/{member.member_id}"] = value
+        return output
+
+
 Endpoint = TypedDict(
     "Endpoint",
     {
@@ -1130,6 +1225,46 @@ class EndpointClientConfig(BaseModel):
 
 
 ClientConfig.model_rebuild()
+
+
+class GenerationTarget(BaseModel):
+    """One concrete model-call target for a member."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    client: ClientConfig
+    model: str
+    sampling_args: SamplingArgs = Field(default_factory=dict)
+
+
+class MemberGenerationPlan(BaseModel):
+    """Per-member generation targets for multi-agent rollouts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    members: dict[str, GenerationTarget] = Field(default_factory=dict)
+
+    @field_validator("members")
+    @classmethod
+    def validate_member_ids(
+        cls, value: dict[str, GenerationTarget]
+    ) -> dict[str, GenerationTarget]:
+        bad_member_ids = [member_id for member_id in value if not member_id.strip()]
+        if bad_member_ids:
+            raise ValueError("MemberGenerationPlan.members keys must be non-empty")
+        return value
+
+    def target_for(self, member_id: str) -> GenerationTarget:
+        try:
+            return self.members[member_id]
+        except KeyError as exc:
+            known = ", ".join(sorted(self.members))
+            raise KeyError(
+                f"No generation target configured for member_id={member_id!r}. Known members: {known or '<none>'}"
+            ) from exc
+
+
+GenerationPlan: TypeAlias = MemberGenerationPlan | list[MemberGenerationPlan]
 
 
 class EvalConfig(BaseModel):

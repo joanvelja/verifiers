@@ -1,26 +1,54 @@
 from asyncio import Future
 from enum import Enum
-from typing import Annotated, Literal, TypeAlias, TypeVar
+from typing import Annotated, Literal, TypeAlias, TypeVar, cast
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict
-from pydantic import SkipValidation  # nosemgrep: verifiers-no-skip-validation
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    PlainValidator,
+)
 
 from verifiers.types import (
     ClientConfig,
+    GenerationPlan,
+    MemberGenerationPlan,
     RolloutInput,
     RolloutOutput,
     SamplingArgs,
 )
+from verifiers.utils.message_utils import normalize_messages
 
 CoercedRolloutOutput = Annotated[
     RolloutOutput, BeforeValidator(lambda v: RolloutOutput(v))
 ]
-RunInput: TypeAlias = (  # nosemgrep: verifiers-no-skip-validation
-    SkipValidation[RolloutInput]
-)
-GroupInput: TypeAlias = (  # nosemgrep: verifiers-no-skip-validation
-    SkipValidation[list[RolloutInput]]
-)
+
+
+def _coerce_rollout_input(value: object) -> RolloutInput:
+    if not isinstance(value, dict):
+        raise TypeError(f"RolloutInput must be a dict, got {type(value).__name__}")
+    if "prompt" not in value:
+        raise ValueError("RolloutInput.prompt is required")
+    if "example_id" not in value:
+        raise ValueError("RolloutInput.example_id is required")
+
+    input_value = dict(value)
+    input_value["prompt"] = normalize_messages(
+        input_value["prompt"], field_name="input.prompt"
+    )
+    return cast(RolloutInput, input_value)
+
+
+def _coerce_group_input(value: object) -> list[RolloutInput]:
+    if not isinstance(value, list):
+        raise TypeError(f"group_inputs must be a list, got {type(value).__name__}")
+    return [_coerce_rollout_input(item) for item in value]
+
+
+RunInput: TypeAlias = Annotated[RolloutInput, PlainValidator(_coerce_rollout_input)]
+GroupInput: TypeAlias = Annotated[
+    list[RolloutInput], PlainValidator(_coerce_group_input)
+]
 
 
 class BaseRequest(BaseModel):
@@ -55,6 +83,7 @@ class RunRolloutRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    generation: MemberGenerationPlan | None = None
 
 
 class RunRolloutResponse(BaseResponse):
@@ -71,6 +100,7 @@ class RunGroupRequest(BaseRequest):
     sampling_args: SamplingArgs
     max_retries: int
     state_columns: list[str] | None
+    generation: GenerationPlan | None = None
 
 
 class RunGroupResponse(BaseResponse):

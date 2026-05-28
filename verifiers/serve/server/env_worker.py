@@ -146,6 +146,7 @@ class EnvWorker:
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            generation=request.generation,
         )
         return RunRolloutResponse(output=output)
 
@@ -158,6 +159,7 @@ class EnvWorker:
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            generation=request.generation,
         )
         return RunGroupResponse(outputs=outputs)
 

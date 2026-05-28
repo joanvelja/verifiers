@@ -14,9 +14,6 @@ from collections.abc import Mapping
 from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
-
-from renderers import Message as RendererMessage
-from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import (
     AutoRendererConfig,
     MultimodalRenderer,
@@ -25,13 +22,15 @@ from renderers import (
     Renderer,
     RendererConfig,
     RendererPool,
+    ToolCallFunction,
     ToolSpec,
     config_from_name,
     create_renderer_pool,
     is_multimodal,
 )
+from renderers import Message as RendererMessage
+from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import ToolCall as RendererToolCall
-from renderers import ToolCallFunction
 from renderers.base import MODEL_RENDERER_MAP
 from renderers.client import _maybe_offload, generate
 
@@ -39,6 +38,7 @@ from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
+from verifiers.clients.trajectory_utils import iter_member_candidate_steps
 from verifiers.errors import EmptyModelResponseError, OverlongPromptError
 from verifiers.types import (
     AssistantMessage,
@@ -291,12 +291,22 @@ def _step_multi_modal_data(step: Any):
     return _get_value(raw_tokens, "multi_modal_data")
 
 
+def _step_rendered_messages(step: Any) -> list[RendererMessage]:
+    prompt = list(_get_value(step, "prompt", []) or [])
+    completion = list(_get_value(step, "completion", []) or [])
+    return _attach_tool_call_names(
+        [_coerce_renderer_message(message) for message in prompt + completion]
+    )
+
+
 async def _get_incremental_prompt_ids(
     *,
     renderer: Renderer | RendererPool,
     prompt: list[RendererMessage],
     state: Any,
     tools: list[ToolSpec] | None,
+    member_id: str | None = None,
+    prefix_candidate_indices: tuple[int, ...] | None = None,
 ) -> "RenderedTokens | None":
     """Return the bridged prompt for the next turn as ``RenderedTokens``.
 
@@ -318,19 +328,19 @@ async def _get_incremental_prompt_ids(
     # falls back to a full re-render — matching main's TITO-on-truncation
     # behavior.
     normalized_prompt = _normalize_for_comparison(prompt)
-    for step in reversed(list(trajectory)):
+    candidate_steps = iter_member_candidate_steps(
+        list(trajectory),
+        member_id=member_id,
+        fallback_member_id=_get_value(state, "trajectory_id"),
+        prefix_candidate_indices=prefix_candidate_indices,
+    )
+
+    for step in candidate_steps:
         token_ids = _step_token_ids(step)
         if token_ids is None:
             continue
 
-        step_prompt = list(_get_value(step, "prompt", []) or [])
-        step_completion = list(_get_value(step, "completion", []) or [])
-        previous_messages = _attach_tool_call_names(
-            [
-                _coerce_renderer_message(message)
-                for message in step_prompt + step_completion
-            ]
-        )
+        previous_messages = _step_rendered_messages(step)
         if not previous_messages or len(previous_messages) >= len(prompt):
             continue
         prefix_len = len(previous_messages)
@@ -583,6 +593,8 @@ class RendererClient(
             prompt=prompt,
             state=kwargs.get("state"),
             tools=tools,
+            member_id=kwargs.get("member_id"),
+            prefix_candidate_indices=kwargs.get("prefix_candidate_indices"),
         )
         # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
         # (multimodal feature pass-through) and prompt_attribution

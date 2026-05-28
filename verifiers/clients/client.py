@@ -35,6 +35,8 @@ AUTH_ERRORS: tuple[type[Exception], ...] = (
     AnthropicPermissionDeniedError,
 )
 
+VERIFIERS_MEMBER_HEADER = "X-Verifiers-Member-ID"
+
 
 class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
     def __init__(self, client_or_config: ClientT | ClientConfig) -> None:
@@ -120,7 +122,13 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
                     if val is not None:
                         state_headers[header_name] = str(val)
                 if state_headers:
-                    kwargs["extra_headers"] = state_headers
+                    caller_headers = dict(kwargs.get("extra_headers") or {})
+                    kwargs["extra_headers"] = {**state_headers, **caller_headers}
+            member_id = kwargs.get("member_id")
+            if member_id is not None:
+                headers = dict(kwargs.get("extra_headers") or {})
+                headers[VERIFIERS_MEMBER_HEADER] = str(member_id)
+                kwargs["extra_headers"] = headers
 
             native_prompt, extra_kwargs = await self.to_native_prompt(prompt)
             native_tools = await self.to_native_tools(tools)

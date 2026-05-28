@@ -224,6 +224,28 @@ def concat_messages(messages_list: list[Messages]) -> Messages:
     return result
 
 
+def fold_consecutive_user_messages(
+    messages: Messages,
+    separator: str = "\n\n",
+) -> Messages:
+    """Collapse runs of consecutive role=user messages into one."""
+    out: list[Message] = []
+    for msg in messages:
+        if not out or msg.role != "user" or out[-1].role != "user":
+            out.append(msg)
+            continue
+        prev = out[-1]
+        prev_content = prev.content
+        new_content = msg.content
+        if not isinstance(prev_content, str) or not isinstance(new_content, str):
+            out.append(msg)
+            continue
+        out[-1] = prev.model_copy(
+            update={"content": prev_content + separator + new_content}
+        )
+    return out
+
+
 def message_to_printable(message: Any) -> Any:
     """
     Removes image_url objects from message content.

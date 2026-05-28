@@ -64,6 +64,17 @@ class StateUsageTracker:
             "output_tokens": self._usage_totals["output_tokens"],
         }
 
+    def fork(self) -> "StateUsageTracker":
+        """Return a zero-initialized child tracker for branch-local accounting."""
+        return StateUsageTracker()
+
+    def merge(self, other: "StateUsageTracker") -> None:
+        """Absorb another tracker's accumulated deltas into this one."""
+        if other._usage_seen:
+            self._usage_seen = True
+        self._usage_totals["input_tokens"] += other._usage_totals["input_tokens"]
+        self._usage_totals["output_tokens"] += other._usage_totals["output_tokens"]
+
 
 def compute_context_token_metrics(
     trajectory: Sequence[Mapping[str, object]],

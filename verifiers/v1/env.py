@@ -5,7 +5,7 @@ from typing import TypeAlias, cast
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import GenerationPlan, RolloutInput, SamplingArgs
 
 from .config import EnvConfig, HarnessConfig, TasksetConfig
 from .harness import Harness
@@ -81,7 +81,10 @@ class Env(vf.Environment):
         client: Client,
         model: str,
         sampling_args: SamplingArgs,
+        generation: GenerationPlan | None = None,
     ) -> State:
+        if generation is not None:
+            raise ValueError("v1 Env does not support member generation plans.")
         return await self.rollout(input, client, model, sampling_args)
 
     async def _run_group_states(
@@ -90,7 +93,10 @@ class Env(vf.Environment):
         client: Client,
         model: str,
         sampling_args: SamplingArgs,
+        generation: GenerationPlan | None = None,
     ) -> list[vf.State]:
+        if generation is not None:
+            raise ValueError("v1 Env does not support member generation plans.")
         base_task = self.taskset.to_task(group_inputs[0])
         tasks, states = await self.taskset.init_group(base_task, len(group_inputs))
         if len(tasks) != len(group_inputs) or len(states) != len(group_inputs):

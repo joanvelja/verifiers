@@ -7,7 +7,7 @@ import tarfile
 import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from importlib.abc import Traversable
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 

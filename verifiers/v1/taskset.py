@@ -1,7 +1,7 @@
 import json
 import uuid
 import weakref
-from importlib.abc import Traversable
+from importlib.resources.abc import Traversable
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path

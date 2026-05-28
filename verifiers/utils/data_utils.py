@@ -6,6 +6,12 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 if TYPE_CHECKING:
     from datasets import Dataset
 
+
+def canonical_example_id(example_id: object) -> str:
+    """Canonical key for grouping/sorting outputs by example identity."""
+    return str(example_id)
+
+
 ### PROMPTS ###
 
 THINK_BOXED_SYSTEM_PROMPT = "Think step-by-step inside <think>...</think> tags. \
