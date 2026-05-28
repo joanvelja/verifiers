@@ -22,10 +22,10 @@ from verifiers.envs.experimental.sandbox_mixin import (
     SandboxTimeouts,
     is_retryable_sandbox_read_error,
 )
+from verifiers.envs.request_context import ModelRequestContext
 from verifiers.types import (
     AssistantMessage,
     Messages,
-    MessageType,
     Response,
     SamplingArgs,
     State,
@@ -550,7 +550,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         model: str | None = None,
         tool_defs: list[Tool] | None = None,
         sampling_args: SamplingArgs | None = None,
-        message_type: MessageType | None = None,
+        request_context: ModelRequestContext | None = None,
     ) -> Response:
         """Get model response and unblock the waiting HTTP handler."""
         # Handle agent completion case (empty prompt)
@@ -618,6 +618,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 model=model,
                 tool_defs=tool_defs,
                 sampling_args=sampling_args,
+                request_context=request_context,
             )
         except BaseException as e:
             error = e

@@ -2,9 +2,10 @@ from typing import Any
 
 from openai import APIError, APITimeoutError, AsyncOpenAI, RateLimitError
 
+from verifiers.clients.client import Client as VerifiersClient
 from verifiers.parsers.parser import Parser
 from verifiers.rubrics.rubric import Rubric
-from verifiers.types import Messages, State
+from verifiers.types import Messages, State, SystemMessage, UserMessage
 from verifiers.utils.async_utils import maybe_await
 
 DEFAULT_JUDGE_PROMPT = """Given a ground truth answer \
@@ -33,23 +34,32 @@ class JudgeRubric(Rubric):
         self,
         parser: Parser | None = None,
         parallelize_scoring: bool = False,
-        judge_client: AsyncOpenAI | None = None,
+        judge_client: AsyncOpenAI | VerifiersClient | None = None,
         judge_model: str = "gpt-4.1-nano",
         judge_sampling_args: dict[str, Any] | None = None,
+        judge_system_prompt: str | None = None,
         judge_prompt: str = DEFAULT_JUDGE_PROMPT,
+        judge_positive_label: str = "yes",
+        judge_negative_label: str = "no",
     ):
         super().__init__(parser=parser)
         self.judge_client = judge_client if judge_client is not None else AsyncOpenAI()
         self.judge_model = judge_model
+        self.judge_system_prompt = judge_system_prompt
         self.judge_prompt = judge_prompt
         self.judge_sampling_args = judge_sampling_args or {}
+        self.judge_positive_label = judge_positive_label
+        self.judge_negative_label = judge_negative_label
         self.class_objects = {
             "parser": self.parser,
             "judge": self.judge,
             "judge_client": self.judge_client,
             "judge_model": self.judge_model,
+            "judge_system_prompt": self.judge_system_prompt,
             "judge_prompt": self.judge_prompt,
             "judge_sampling_args": self.judge_sampling_args,
+            "judge_positive_label": self.judge_positive_label,
+            "judge_negative_label": self.judge_negative_label,
         }
 
     async def judge(
@@ -87,15 +97,27 @@ class JudgeRubric(Rubric):
         ):
             judge_args.pop("max_completion_tokens")
         judge_args = {k: v for k, v in judge_args.items() if v is not None}
+        judge_messages: Messages = [UserMessage(content=judge_prompt)]
+        if self.judge_system_prompt:
+            judge_messages.insert(0, SystemMessage(content=self.judge_system_prompt))
 
         try:
-            judge_response = await maybe_await(
-                self.judge_client.chat.completions.create,
-                model=self.judge_model,
-                messages=[{"role": "user", "content": judge_prompt}],
-                **judge_args,
-            )
-            judge_response = str(judge_response.choices[0].message.content)
+            if isinstance(self.judge_client, VerifiersClient):
+                vf_response = await self.judge_client.get_response(
+                    prompt=judge_messages,
+                    model=self.judge_model,
+                    sampling_args=judge_args,
+                    state=state or {},
+                )
+                judge_response = str(vf_response.message.content)
+            else:
+                native_response = await maybe_await(
+                    self.judge_client.chat.completions.create,
+                    model=self.judge_model,
+                    messages=judge_messages,
+                    **judge_args,
+                )
+                judge_response = str(native_response.choices[0].message.content)
         except RateLimitError as e:
             self.logger.warning(
                 f"Rate limit exceeded when calling judge model '{self.judge_model}'. "

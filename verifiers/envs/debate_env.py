@@ -142,7 +142,7 @@ class DebateEnv(MultiAgentEnv):
         ``.get(..., default)`` -- the contract is that the fn must
         cover every member on any well-formed state.
         """
-        probe = super()._build_probe_state()
+        probe = State({"input": {"info": {}}})
         info = probe["input"]["info"]
         info.setdefault("learner_seat", self.members[0])
         return probe

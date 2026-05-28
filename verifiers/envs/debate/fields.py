@@ -196,6 +196,12 @@ def binary_normalizer(
 
 
 _MCQ_LETTERS = frozenset("ABCDE")
+_MCQ_LETTER_RE = re.compile(r"(?:^|[^A-Za-z0-9])([A-E])(?:[^A-Za-z0-9]|$)")
+
+
+def _normalize_mcq_letter(value: str) -> str | None:
+    match = _MCQ_LETTER_RE.search(value.upper())
+    return match.group(1) if match is not None else None
 
 
 def enum_normalizer(values: tuple[str, ...]) -> Callable[[Any], Any]:
@@ -211,9 +217,7 @@ def enum_normalizer(values: tuple[str, ...]) -> Callable[[Any], Any]:
         if c.is_valid:
             return c.canonical
         if is_mcq:
-            from verifiers.utils.mcq import normalize_mcq
-
-            extracted = normalize_mcq(str(value))
+            extracted = _normalize_mcq_letter(str(value))
             if extracted is not None:
                 c2 = classify_enum(extracted, values)
                 if c2.is_valid:
