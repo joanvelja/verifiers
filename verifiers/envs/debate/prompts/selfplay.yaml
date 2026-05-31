@@ -52,6 +52,17 @@ question:
   debater_b: "{{ task_prompt }}"
   judge: "{{ task_prompt }}"
 
+# Thinking protocol — VISIBILITY only. The generation knobs (enable_thinking,
+# thinking_token_budget) are sampling params and live in the RL sampling config,
+# not the pack. Debaters reason privately: their <think> is recovered into the
+# private channel and shown only to a full viewer (themselves), never to the
+# opponent or judge — so the judge scores the argument, not the scratchpad. The
+# judge does not reason. Uniform reasoning tag defaults to "think" (qwen3 parser).
+think:
+  debater_a: private
+  debater_b: private
+  judge: false
+
 user:
   debater_a:
     propose: >-

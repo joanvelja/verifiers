@@ -480,13 +480,14 @@ def _compile_flat_templates(block: dict[str, str]) -> dict[str, jinja2.Template]
 
 
 def _normalize_think(block: dict) -> tuple[dict[str, str], str]:
-    """Parse think block into (role → visibility, tag).
+    """Parse think block into (role -> visibility, tag).
 
-    Returns a flat dict mapping role to visibility string,
-    plus the think tag (uniform across roles, default "thinking").
+    Returns a flat dict mapping role to visibility string, plus the think
+    tag (uniform across roles, default "think" to match the qwen3 reasoning
+    parser's ``<think>`` boundary).
     """
     visibility: dict[str, str] = {}
-    tag = "thinking"
+    tag = "think"
 
     for role, val in block.items():
         if isinstance(val, dict):

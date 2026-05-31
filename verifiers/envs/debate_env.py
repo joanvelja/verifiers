@@ -23,6 +23,7 @@ from verifiers.envs.debate.prompts import (
     resolve_prompts,
 )
 from verifiers.envs.multi_agent_kernel import (
+    ContentChannels,
     KernelState,
     SlotProgram,
     StaticSchedule,
@@ -30,11 +31,16 @@ from verifiers.envs.multi_agent_kernel import (
     Utterance,
 )
 from verifiers.rubrics.debate_rubric import question_from_state
-from verifiers.envs.multi_agent_env import MultiAgentEnv, VisibilityMode
+from verifiers.envs.multi_agent_env import (
+    MultiAgentEnv,
+    VisibilityMode,
+    _coerce_text_content,
+)
 from verifiers.types import (
     AssistantMessage,
-    Messages,
     Message,
+    Messages,
+    Response,
     State,
     SystemMessage,
     UserMessage,
@@ -283,6 +289,32 @@ class DebateEnv(MultiAgentEnv):
         if vis == "visible_to_judge" and viewer_id == "judge":
             return "full"
         return "public_only"
+
+    def split_response_channels(
+        self, response: Response, member_id: str, slot: TurnSlot
+    ) -> tuple[str, ContentChannels]:
+        """Recover the raw turn and route reasoning to the private channel.
+
+        The ``--reasoning-parser`` splits a turn into ``content`` (the visible
+        argument) and ``reasoning_content`` (the ``<think>`` block). We recover
+        the verbatim raw (reasoning then argument) as ``raw_content`` and expose
+        only the argument on ``public_channel``. ``visibility_policy`` then picks
+        per viewer: a ``full`` viewer (own turns; the judge under
+        ``visible_to_judge``; everyone under ``open``) reads ``raw_content`` and
+        so sees the reasoning, while a ``public_only`` viewer reads
+        ``public_channel`` and never does. Under the default ``private`` the
+        reasoning therefore stays out of the argument the judge scores -- no
+        leak -- yet own-turn replay still carries it (KEEP), which is what the
+        kernel's monotonic-prefix reuse is for.
+        """
+        content = _coerce_text_content(response.message.content)
+        reasoning = response.message.reasoning_content or None
+        if reasoning is not None:
+            tag = self.prompts.think_tag
+            raw = f"<{tag}>\n{reasoning}\n</{tag}>\n\n{content}"
+        else:
+            raw = content
+        return raw, ContentChannels(public=content.strip(), private=reasoning)
 
     # -- prompt construction -------------------------------------------------
 
