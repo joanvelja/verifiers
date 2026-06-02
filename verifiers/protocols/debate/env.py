@@ -30,9 +30,9 @@ from verifiers.envs.multi_agent_kernel import (
     TurnSlot,
     Utterance,
     causal_transcript_view,
-    schedule_to_explainer,
 )
 from verifiers.protocols.debate.rubric import question_from_state
+from verifiers.protocols.debate.schedule import schedule_to_explainer
 from verifiers.envs.multi_agent_env import MultiAgentEnv, VisibilityMode
 from verifiers.types import (
     AssistantMessage,

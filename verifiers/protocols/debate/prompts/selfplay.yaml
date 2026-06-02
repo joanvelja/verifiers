@@ -28,7 +28,7 @@ system:
   # Schedule-agnostic criteria. The turn structure (who spoke when, what
   # they could see) is NOT hard-coded here — it is injected via
   # {{ schedule_explainer }}, derived from the live schedule, so the prompt
-  # stays truthful if the schedule changes. See multi_agent_kernel.schedule_to_explainer.
+  # stays truthful if the schedule changes. See protocols/debate/schedule.py.
   judge: >-
     You're judging a scientific debate. You can't verify the claims
     yourself, so judge only what's written and don't try to solve the
