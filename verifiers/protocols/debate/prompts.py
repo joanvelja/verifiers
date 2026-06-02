@@ -253,8 +253,14 @@ def build_context(
     round_index: int,
     num_rounds: int,
     answer: str = "",
+    schedule_explainer: str = "",
 ) -> dict[str, Any]:
-    """Build Jinja template context for rendering."""
+    """Build Jinja template context for rendering.
+
+    ``schedule_explainer`` is a schedule-level (turn-invariant) description of
+    the debate structure, injected into the judge's system prompt. It is safe
+    in the system block precisely because it does not vary per round/phase.
+    """
     return {
         "task_prompt": task_prompt,
         "viewer_id": viewer_id,
@@ -265,6 +271,7 @@ def build_context(
         "is_last_round": round_index == num_rounds - 1,
         "answer": answer,
         "has_assigned_answer": bool(answer),
+        "schedule_explainer": schedule_explainer,
     }
 
 

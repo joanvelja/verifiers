@@ -84,6 +84,12 @@ class MultiAgentRubric(Rubric):
 
     async def score_rollout(self, state: State) -> None:
         if state.get("prompt_too_long", False):
+            # Record the error so the fan-out bridge treats this as a properly
+            # errored rollout (drop the member with no trajectory step) rather
+            # than raising on the inconsistency and aborting the whole step.
+            state["error"] = vf.OverlongPromptError(
+                "prompt exceeded the model's max length before scoring (prompt_too_long)"
+            )
             state["mar_score"] = self.build_errored_marscore(
                 state, error_type="prompt_too_long", error_phase="rollout"
             )

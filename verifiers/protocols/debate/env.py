@@ -30,6 +30,7 @@ from verifiers.envs.multi_agent_kernel import (
     TurnSlot,
     Utterance,
     causal_transcript_view,
+    schedule_to_explainer,
 )
 from verifiers.protocols.debate.rubric import question_from_state
 from verifiers.envs.multi_agent_env import MultiAgentEnv, VisibilityMode
@@ -72,6 +73,14 @@ class DebateEnv(MultiAgentEnv):
             schedule=schedule,
             members=members,
             **kwargs,
+        )
+
+        # Plain-language description of the turn schedule, injected into the
+        # judge's system prompt as {{ schedule_explainer }} (see selfplay.yaml).
+        # judge_members={"judge"} matches DebateRubric's winner set
+        # (valid_winners = members - {"judge"}); keep both in sync.
+        self._schedule_explainer = schedule_to_explainer(
+            schedule, judge_members={"judge"}
         )
 
         # Cross-check 1: env.members must equal rubric.members exactly.
@@ -432,6 +441,7 @@ class DebateEnv(MultiAgentEnv):
             round_index=round_index,
             num_rounds=num_rounds,
             answer=state["answer"],
+            schedule_explainer=self._schedule_explainer,
         )
 
     def _render_own_turn(
