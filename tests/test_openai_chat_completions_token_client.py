@@ -1,5 +1,6 @@
 from typing import Any, cast
 
+import httpx
 import pytest
 
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
@@ -25,26 +26,58 @@ class _RecordingClient(_NoopClient):
         self, path: str, body: dict[str, Any], cast_to: type, **kwargs: Any
     ) -> Any:
         self.calls.append({"path": path, "body": body, "cast_to": cast_to})
-        return {"ok": True, "path": path, "body": body}
-
-
-class _CreateRecorder:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    async def create(self, **kwargs: Any) -> Any:
-        self.calls.append(kwargs)
-        return {"ok": True, "kwargs": kwargs}
-
-
-class _ChatRecorder:
-    def __init__(self) -> None:
-        self.completions = _CreateRecorder()
+        return httpx.Response(
+            200,
+            json={
+                "id": path,
+                "object": "chat.completion",
+                "created": 1,
+                "model": body["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "ok": True,
+                "path": path,
+                "body": body,
+            },
+        )
 
 
 class _FallbackRecordingClient(_NoopClient):
+    """Records ``.post`` calls so the first-turn MITO fallback can be inspected.
+
+    The base ``get_native_response`` posts the chat-completions request through
+    ``post_chat_completion_with_routed_experts_sidecar`` -> ``client.post(...)``,
+    so the fallback path must expose ``.post`` (not ``.chat.completions.create``).
+    """
+
     def __init__(self) -> None:
-        self.chat = _ChatRecorder()
+        self.calls: list[dict[str, Any]] = []
+
+    async def post(
+        self, path: str, body: dict[str, Any], cast_to: type, **kwargs: Any
+    ) -> Any:
+        self.calls.append({"path": path, "body": body, "cast_to": cast_to})
+        return httpx.Response(
+            200,
+            json={
+                "id": path,
+                "object": "chat.completion",
+                "created": 1,
+                "model": body["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
 
 
 class _PromptIdTestClient(OpenAIChatCompletionsTokenClient):
@@ -135,10 +168,16 @@ async def test_token_client_first_turn_fallback_preserves_return_token_ids() -> 
         state=cast(State, {"model": "test-model", "trajectory": []}),
     )
 
-    call = recording_client.chat.completions.calls[0]
-    assert call["top_k"] == 20
-    assert call["min_p"] == 0.1
-    assert call["extra_body"]["return_token_ids"] is True
+    # First turn (empty trajectory) falls back to the MITO /chat/completions
+    # route, which posts via the routed-experts sidecar -> client.post(...).
+    call = recording_client.calls[0]
+    assert call["path"] == "/chat/completions"
+    body = call["body"]
+    assert body["top_k"] == 20
+    assert body["min_p"] == 0.1
+    # The token client injects return_token_ids via extra_body, which the base
+    # client spreads flat into the request body.
+    assert body["return_token_ids"] is True
 
 
 @pytest.mark.asyncio
@@ -462,7 +501,7 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
         state=state,
     )
 
-    assert response["ok"] is True
+    assert response.model_extra["ok"] is True
     assert state["metrics"]["client/openai_chat_completions_token_tito_hit"] == 1.0
     assert len(recording_client.calls) == 1
     assert recording_client.calls[0]["path"] == "/chat/completions/tokens"

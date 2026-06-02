@@ -1,8 +1,21 @@
 import verifiers as vf
 
 
-async def ask_subagent(name: str, harness, state) -> str:
-    """Ask a child language-model harness to produce the greeting for one name."""
+async def child_program(
+    task: vf.Task, state: vf.State
+) -> dict[str, list[dict[str, str]]]:
+    _ = state
+    name = str(task["name"])
+    return {"completion": [{"role": "assistant", "content": f"hello {name}"}]}
+
+
+class ChildHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="child_program")
+
+
+async def ask_subagent(name: str, state) -> str:
+    """Ask a child harness to produce the greeting for one name."""
+    harness = vf.Harness(config=ChildHarnessConfig())
     task = vf.Task(
         {
             "name": name,
@@ -49,7 +62,8 @@ NAME_GROUPS = [
 ]
 
 
-def source():
+def load_tasks(split: vf.TaskSplit = "train"):
+    _ = split
     return [
         {
             "names": names,
@@ -60,42 +74,37 @@ def source():
     ]
 
 
-def load_child_harness():
-    return vf.Harness()
-
-
-def load_toolset():
-    return vf.Toolset(
-        tools=[ask_subagent],
-        objects={"harness": load_child_harness},
-        bindings={"ask_subagent.harness": "objects.harness"},
-        scope="rollout",
+class SubagentTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["exact_answer"]
+    system_prompt: str = (
+        "You are a parent coordinator. You must call ask_subagent once for "
+        "each requested name. After all tool results are available, join "
+        "the child answers with ', ' and output only that final joined text."
     )
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(
-        source=source,
-        system_prompt=(
-            "You are a parent coordinator. You must call ask_subagent once for "
-            "each requested name. After all tool results are available, join "
-            "the child answers with ', ' and output only that final joined text."
-        ),
-        rewards=[exact_answer],
-        config=config,
-    )
+class SubagentHarnessConfig(vf.HarnessConfig):
+    metrics: list[str] = ["subagent_calls"]
 
 
-def load_harness(config: vf.HarnessConfig):
-    return vf.Harness(
-        toolsets=[load_toolset()],
-        metrics=[subagent_calls],
-        config=config,
-    )
+class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(split)
 
 
-def load_environment(config: vf.EnvConfig):
+class SubagentHarness(vf.Harness[SubagentHarnessConfig]):
+    def load_toolsets(self, config: SubagentHarnessConfig) -> vf.Toolsets:
+        _ = config
+        return {"subagent": vf.Toolset(tools=[ask_subagent], scope="rollout")}
+
+
+class SubagentEnvConfig(vf.EnvConfig):
+    taskset: SubagentTasksetConfig = SubagentTasksetConfig()
+    harness: SubagentHarnessConfig = SubagentHarnessConfig()
+
+
+def load_environment(config: SubagentEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=SubagentTaskset(config=config.taskset),
+        harness=SubagentHarness(config=config.harness),
     )

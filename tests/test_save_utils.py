@@ -281,6 +281,13 @@ class TestSavingResults:
         assert result[0].get("foo") == "bar"  # custom field from make_state fixture
         assert result[0]["reward"] == 1.0
 
+    def test_states_to_outputs_requires_example_id(self, make_state):
+        state = make_state()
+        del state["example_id"]
+
+        with pytest.raises(KeyError):
+            states_to_outputs([state], state_columns=[])
+
     def test_states_to_outputs_completion_keeps_messages(self, make_state):
         states = [
             make_state(
@@ -713,6 +720,22 @@ class TestBuilderPassAtK:
         assert metadata["pass_at_k"]["1"] == pytest.approx(0.25)
         # 1 of 4 correct at threshold=0.7: pass^1 = C(1,1)/C(4,1) = 0.25
         assert metadata["pass_all_k"]["1"] == pytest.approx(0.25)
+
+    def test_builder_requires_example_id(self):
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=1,
+            rollouts_per_example=1,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+        )
+
+        with pytest.raises(KeyError):
+            builder.add_outputs([{"reward": 1.0, "metrics": {}}])
 
 
 class TestMetricProtocol:
@@ -1253,3 +1276,34 @@ class TestDeltaIntermediateMmData:
         assert out[1] == "not-a-dict"
         # Delta of step 2 still computed against step 0 (last seen cumulative).
         assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}
+
+    def test_partial_compaction_preserves_preserved_images_in_delta(self):
+        """Compaction that keeps a subset of prior images must not drop them.
+
+        Multiset diff is lossless only when ``prior`` is a multiset-subset
+        of ``current``. A compaction that preserves *some* prior images
+        violates that precondition: walking ``current`` left-to-right
+        consumes the preserved images out of the delta (they "match" prior
+        occurrences) even though those images really do appear in the
+        post-compaction prompt. The fix detects the non-monotonic transition
+        and emits current's full cumulative as-is.
+        """
+        # Turn 0: image A.       Cumulative {A}.
+        # Turn 1: image B added. Cumulative {A, B}.
+        # ── partial compaction: drop A, keep B, add new image C ──
+        # Turn 2 (fresh render): Cumulative {B, C}.
+        traj = [
+            self._step(self._mm("A")),
+            self._step(self._mm("A", "B")),
+            self._step(self._mm("B", "C")),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}
+        # Without the fix, a multiset diff vs prior={A, B} would drop B.
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B", "C"]}
+        assert out[2]["tokens"]["multi_modal_data"].mm_items["image"] == [
+            {"pixel_values": "px-B"},
+            {"pixel_values": "px-C"},
+        ]

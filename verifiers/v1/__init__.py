@@ -1,5 +1,7 @@
 """Taskset/harness authoring API."""
 
+import importlib
+
 from verifiers.decorators import (
     advantage,
     cleanup,
@@ -12,37 +14,29 @@ from verifiers.decorators import (
 )
 from verifiers.types import (
     AssistantMessage,
+    EndpointConfig,
     Message,
     Messages,
     SystemMessage,
     TextMessage,
+    ToolLike,
     ToolMessage,
     UserMessage,
 )
 from verifiers.utils.message_utils import get_messages
 
 from .config import (
+    CallableConfig,
     Config,
-    EnvConfig,
-    HarnessConfig,
-    MCPToolConfig,
-    ProgramConfig,
-    SandboxConfig,
-    TasksetConfig,
-    ToolsetConfig,
-    UserConfig,
+    SignalConfig,
 )
-from .env import Env
-from .harness import Harness
-from .packages.harnesses import (
-    MiniSWEAgent,
-    OpenCode,
-    OpenCodeConfig,
-    Pi,
-    RLM,
-    RLMConfig,
-    Terminus2,
-)
+from .env import Env, EnvConfig
+from .artifact import ArtifactConfig, Artifacts, ArtifactsConfig
+from .harness import Harness, HarnessConfig
+from .model import ModelConfig
+from .program import ProgramConfig, ProgramValue
+from .runtime import TrajectoryVisibility
+from .sandbox import SandboxConfig
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
@@ -54,66 +48,79 @@ from .utils.scoring_utils import (
 )
 from .state import State
 from .task import Task
-from .taskset import Taskset, discover_sibling_dir
-from .packages.tasksets import (
-    HarborTaskset,
-    HarborTasksetConfig,
+from .taskset import Taskset, TasksetConfig, discover_sibling_dir
+from .toolset import (
+    MCPTool,
+    MCPToolConfig,
+    Toolset,
+    ToolsetConfig,
+    Toolsets,
+    VisibilityConfig,
 )
-from .toolset import MCPTool, Toolset
+from .utils.endpoint_utils import Endpoint
+from .utils.binding_utils import BindingsConfig, ObjectsConfig
+from .utils.prompt_utils import SystemPrompt, SystemPromptConfig, SystemPromptStrategy
 from .types import (
     ConfigData,
-    ConfigMap,
-    GroupHandler,
     Handler,
-    MutableConfigMap,
+    JsonData,
     Objects,
-    TaskRow,
-    TaskRows,
+    PromptInput,
+    TaskSplit,
+    Tasks,
 )
-from .user import User
+from .user import User, UserConfig
 
 __all__ = [
+    "BindingsConfig",
+    "ArtifactConfig",
+    "Artifacts",
+    "ArtifactsConfig",
     "ConfigData",
+    "CallableConfig",
     "Config",
-    "ConfigMap",
     "Env",
     "EnvConfig",
+    "Endpoint",
+    "EndpointConfig",
     "AssistantMessage",
-    "GroupHandler",
     "Harness",
     "HarnessConfig",
-    "HarborTaskset",
-    "HarborTasksetConfig",
     "Handler",
-    "MutableConfigMap",
+    "JsonData",
     "MCPTool",
     "MCPToolConfig",
     "Message",
     "Messages",
-    "MiniSWEAgent",
-    "OpenCode",
-    "OpenCodeConfig",
+    "ModelConfig",
     "Objects",
-    "Pi",
+    "ObjectsConfig",
     "ProgramConfig",
-    "RLM",
-    "RLMConfig",
-    "Terminus2",
+    "ProgramValue",
+    "PromptInput",
     "SandboxConfig",
+    "SignalConfig",
     "State",
+    "SystemPrompt",
+    "SystemPromptConfig",
+    "SystemPromptStrategy",
     "Task",
-    "TaskRow",
-    "TaskRows",
+    "TaskSplit",
+    "Tasks",
     "Taskset",
     "TasksetConfig",
     "SystemMessage",
     "TextMessage",
+    "ToolLike",
     "Toolset",
     "ToolsetConfig",
+    "Toolsets",
     "ToolMessage",
+    "TrajectoryVisibility",
     "User",
     "UserMessage",
     "UserConfig",
+    "VisibilityConfig",
     "add_metric",
     "add_reward",
     "add_advantage",
@@ -124,6 +131,8 @@ __all__ = [
     "discover_sibling_dir",
     "metric",
     "get_messages",
+    "load_harness",
+    "load_taskset",
     "reward",
     "score_group",
     "score_rollout",
@@ -132,3 +141,10 @@ __all__ = [
     "teardown",
     "update",
 ]
+
+
+def __getattr__(name: str):
+    if name in ("load_harness", "load_taskset"):
+        module = importlib.import_module("verifiers.utils.env_utils")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

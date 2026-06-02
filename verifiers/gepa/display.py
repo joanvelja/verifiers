@@ -58,7 +58,7 @@ class GEPADisplay(BaseDisplay):
     """
     Rich-based display for GEPA optimization.
 
-    Implements GEPA's LoggerProtocol (log method).
+    Provides the ``log(message)`` hook accepted by GEPA's optimizer.
     Call update_eval() from adapter to track progress.
 
     Args:
@@ -135,7 +135,7 @@ class GEPADisplay(BaseDisplay):
         self._print_final_summary()
 
     def log(self, message: str) -> None:
-        """LoggerProtocol - receives GEPA log messages."""
+        """Receive GEPA optimizer log messages."""
         if self.log_file:
             with open(self.log_file, "a") as f:
                 f.write(message + "\n")

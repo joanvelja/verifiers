@@ -163,6 +163,9 @@ class PassAtKMetric:
         self.reset()
 
     def add_output(self, output: RolloutOutput) -> None:
+        example_id = output["example_id"]
+        if example_id is None:
+            raise ValueError("output['example_id'] is required.")
         if not self._k_values:
             return
 

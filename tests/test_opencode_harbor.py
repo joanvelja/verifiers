@@ -3,7 +3,9 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
-import verifiers.v1 as vf
+import verifiers as vf
+from harnesses import OpenCode, OpenCodeConfig, OpenCodeProgramConfig
+from tasksets import HarborTaskset
 
 
 def _load_opencode_module() -> Any:
@@ -28,21 +30,33 @@ def _load_opencode_module() -> Any:
 def test_load_environment_uses_v1_taskset_and_harness() -> None:
     module = _load_opencode_module()
 
-    env = module.load_environment(config=module.OpenCodeHarborEnvConfig())
+    env = module.load_environment(
+        config=vf.EnvConfig(
+            taskset=module.HarborTasksetConfig(),
+            harness=module.OpenCodeConfig(),
+        )
+    )
 
     assert isinstance(env, vf.Env)
-    assert isinstance(env.taskset, vf.HarborTaskset)
-    assert isinstance(env.harness, vf.OpenCode)
-    assert isinstance(env.harness.config, vf.OpenCodeConfig)
+    assert isinstance(env.taskset, HarborTaskset)
+    assert isinstance(env.harness, OpenCode)
+    assert isinstance(env.harness.config, OpenCodeConfig)
     assert not hasattr(module, "OpenCodeHarborHarnessConfig")
     assert not hasattr(module, "TERMINAL_BENCH_SAMPLE_TASKS")
-    assert env.taskset.resolve_tasks_root() == Path(module.__file__).parent / "tasks"
+    assert env.taskset.config.bundle_package == module.__name__
+    task = next(iter(env.taskset))
+    assert (
+        Path(cast(str, task["task_dir"])).parent
+        == Path(module.__file__).parent / "tasks"
+    )
     assert env.harness.config.max_turns == 4
-    assert env.harness.config.disabled_tools == vf.OpenCodeConfig().disabled_tools
-    assert "webfetch" in env.harness.config.disabled_tools
-    assert "question" in env.harness.config.disabled_tools
+    assert env.harness.config.program.disabled_tools == (
+        OpenCodeConfig().program.disabled_tools
+    )
+    assert "webfetch" in env.harness.config.program.disabled_tools
+    assert "question" in env.harness.config.program.disabled_tools
 
-    program = cast(dict[str, object], env.harness.program)
+    program = cast(dict[str, object], env.harness.config.program.data())
     mcp_setup = cast(dict[str, object], program["channels"])["mcp"]
     assert '"webfetch": false' in cast(str, mcp_setup)
     assert '"question": false' in cast(str, mcp_setup)
@@ -52,26 +66,32 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
     module = _load_opencode_module()
 
     env = module.load_environment(
-        config=module.OpenCodeHarborEnvConfig(
-            taskset={
-                "task_names": ["task-a"],
-                "cpu_cores": 1.5,
-            },
-            harness={
-                "agent_workdir": "/workspace",
-                "disabled_tools": ["webfetch"],
-                "max_turns": 2,
-            },
+        config=vf.EnvConfig(
+            taskset=module.HarborTasksetConfig(
+                task_names=["hello-world"],
+                sandbox=vf.SandboxConfig(cpu_cores=1.5),
+            ),
+            harness=module.OpenCodeConfig(
+                program=OpenCodeProgramConfig(
+                    agent_workdir="/workspace",
+                    disabled_tools=["webfetch"],
+                ),
+                max_turns=2,
+            ),
         )
     )
 
-    assert env.taskset.resolve_tasks_root() == Path(module.__file__).parent / "tasks"
-    assert env.taskset.task_names == ["task-a"]
-    assert env.taskset.cpu_cores == 1.5
-    assert env.harness.config.agent_workdir == "/workspace"
+    assert env.taskset.config.bundle_package == module.__name__
+    task = next(iter(env.taskset))
+    assert task["task_dir"] == str(
+        Path(module.__file__).parent / "tasks" / "hello-world"
+    )
+    assert env.taskset.config.task_names == ["hello-world"]
+    assert env.taskset.config.sandbox.cpu_cores == 1.5
+    assert env.harness.config.program.agent_workdir == "/workspace"
     assert env.harness.config.max_turns == 2
 
-    program = cast(dict[str, object], env.harness.program)
+    program = cast(dict[str, object], env.harness.config.program.data())
     command = cast(list[object], program["command"])
     mcp_setup = cast(dict[str, object], program["channels"])["mcp"]
     assert "/workspace" in cast(str, command[2])

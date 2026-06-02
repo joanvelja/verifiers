@@ -3,7 +3,6 @@ from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import (
-    ChatCompletion,
     ChatCompletionAssistantMessageParam,
 )
 from openai.types.chat.chat_completion_message_function_tool_call_param import (
@@ -22,6 +21,9 @@ from verifiers.clients.openai_chat_completions_client import (
 )
 from verifiers.api_profile import ApiProfile
 from verifiers.types import SamplingArgs, State
+from verifiers.utils.client_utils import (
+    post_chat_completion_with_routed_experts_sidecar,
+)
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -187,14 +189,14 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         )
 
         extra_body = sampling_args.pop("extra_body", {})
-        body = dict(
-            model=model,
-            messages=prompt,
-            tools=tools,
-            tokens=prompt_ids,
+        body = {
+            "model": model,
+            "messages": prompt,
+            "tools": tools,
+            "tokens": prompt_ids,
             **sampling_args,
             **extra_body,
-        )
+        }
 
         return await self._post_token_response(body=body, extra_headers=extra_headers)
 
@@ -207,13 +209,14 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         The two MITO branches above delegate to ``super().get_native_response``
         and so inherit the base method's ``finish_reason='error'`` retry; wrapping
         this third producer keeps every ChatCompletion response on the same retry
-        without double-wrapping the delegated paths.
+        without double-wrapping the delegated paths. The post goes through the
+        routed-experts sidecar (upstream) for MoE replay support.
         """
-        return await self.client.post(
+        return await post_chat_completion_with_routed_experts_sidecar(
+            self.client,
             "/chat/completions/tokens",
             body=body,
-            cast_to=ChatCompletion,
-            options={"headers": extra_headers} if extra_headers else {},
+            extra_headers=extra_headers,
         )
 
     async def get_prompt_ids(
@@ -329,7 +332,16 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
         # The env messages are everything after the prefix match.
         env_messages: OpenAIChatMessages = list(prompt_messages[prefix_len:])
-        if not _is_valid_env_tail(env_messages):
+        if not env_messages:
+            return None
+        env_roles = [
+            msg.get("role") if hasattr(msg, "get") else getattr(msg, "role", None)
+            for msg in env_messages
+        ]
+        if any(role != "tool" for role in env_roles[:-1]) or env_roles[-1] not in (
+            "tool",
+            "user",
+        ):
             return None
 
         # Extract the bridge tokens using a minimal dual-tokenization that
@@ -348,7 +360,10 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         # follow an assistant message with a tool call").
         tool_call_ids: list[str] = []
         for msg in env_messages:
-            if _get_role(msg) != "tool":
+            role = (
+                msg.get("role") if hasattr(msg, "get") else getattr(msg, "role", None)
+            )
+            if role != "tool":
                 break
             tc_id = (
                 msg.get("tool_call_id")

@@ -6,7 +6,12 @@ from typing import Protocol, cast
 from datasets import Dataset
 
 import verifiers as vf
-from wiki_graph import WikiGraph, WikiPair, load_wiki_graph
+from verifiers.v1.utils.prompt_utils import normalize_system_prompt
+
+if __package__:
+    from .wiki_graph import WikiGraph, WikiPair, load_wiki_graph
+else:
+    from wiki_graph import WikiGraph, WikiPair, load_wiki_graph
 
 
 class AgentMessage(Protocol):
@@ -64,21 +69,20 @@ class WikispeediaTasksetConfig(vf.TasksetConfig):
 
 
 class WikispeediaHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(
+        fn="run_langchain_deep_agents_wikispeedia_program"
+    )
     max_turns: int = 50
     timeout_seconds: float = 1200.0
 
 
-class WikispeediaEnvConfig(vf.EnvConfig):
-    taskset: WikispeediaTasksetConfig
-    harness: WikispeediaHarnessConfig
+class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(self.config, split=split)
 
 
-class WikispeediaTaskset(vf.Taskset):
-    config_type = WikispeediaTasksetConfig
-
-
-class WikispeediaHarness(vf.Harness):
-    config_type = WikispeediaHarnessConfig
+class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
+    pass
 
 
 def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> str:
@@ -199,21 +203,31 @@ def load_toolset(
     allow_go_back: bool = True,
     config: vf.ToolsetConfig | None = None,
 ) -> vf.Toolset:
-    tools = [click_link]
-    bindings = {
-        "click_link.wiki": "objects.wiki",
-    }
+    wiki_graph: WikiGraph | None = None
+
+    def wiki() -> WikiGraph:
+        nonlocal wiki_graph
+        if wiki_graph is None:
+            wiki_graph = load_wiki_graph(cache_dir)
+        return wiki_graph
+
+    async def click_link_tool(article: str, state: vf.State) -> str:
+        return await click_link(article, wiki(), state)
+
+    click_link_tool.__name__ = "click_link"
+    click_link_tool.__doc__ = click_link.__doc__
+
+    tools: list[vf.Handler] = [click_link_tool]
     if allow_go_back:
-        tools.append(go_back)
-        bindings.update(
-            {
-                "go_back.wiki": "objects.wiki",
-            }
-        )
+
+        async def go_back_tool(state: vf.State) -> str:
+            return await go_back(wiki(), state)
+
+        go_back_tool.__name__ = "go_back"
+        go_back_tool.__doc__ = go_back.__doc__
+        tools.append(go_back_tool)
     return vf.Toolset(
         tools=tools,
-        objects={"wiki": lambda: load_wiki_graph(cache_dir)},
-        bindings=bindings,
         config=config,
     )
 
@@ -304,8 +318,34 @@ def build_dataset(
     return Dataset.from_list(records)
 
 
+def split_pairs(
+    config: WikispeediaTasksetConfig,
+) -> tuple[list[WikiPair], list[WikiPair]]:
+    return load_wiki_graph(config.cache_dir).split_pairs(
+        train_size=config.train_size,
+        eval_size=config.eval_size,
+        min_dist=config.min_path_length,
+        max_dist=config.max_path_length,
+        eval_target_fraction=config.eval_target_fraction,
+        seed=config.split_seed,
+        stratify=config.stratify_path_length,
+    )
+
+
+def load_tasks(
+    config: WikispeediaTasksetConfig, split: vf.TaskSplit = "train"
+) -> Dataset:
+    train, eval_ = split_pairs(config)
+    return build_dataset(
+        load_wiki_graph(config.cache_dir),
+        train if split == "train" else eval_,
+        links_only=config.links_only,
+        max_turns=config.max_turns,
+    )
+
+
 def serialize_agent_completion(
-    messages: Sequence[AgentMessage | vf.ConfigMap],
+    messages: Sequence[AgentMessage | vf.JsonData],
 ) -> list[vf.ConfigData]:
     role_aliases = {
         "human": "user",
@@ -412,6 +452,7 @@ def make_langchain_deep_agents_program(
         from deepagents import create_deep_agent
         from langchain_openai import ChatOpenAI
         from langgraph.errors import GraphRecursionError
+        from openai import OpenAI
 
         state["current_article"] = state["info"]["source"]
         state["path"] = [state["info"]["source"]]
@@ -420,10 +461,13 @@ def make_langchain_deep_agents_program(
         state["links_only"] = bool(task.get("links_only", False))
 
         endpoint_config = state.get_endpoint_config(api="chat")
+        endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+        endpoint_api_key = endpoint_client.api_key
+        endpoint_client.close()
         model = ChatOpenAI(
-            model=endpoint_config["model"],
-            base_url=endpoint_config["api_base"],
-            api_key=endpoint_config["api_key"],
+            model=endpoint_config.model,
+            base_url=endpoint_config.base_url,
+            api_key=endpoint_api_key,
         )
         runtime_tools = state.get_tools()
         nav_tools = langchain_navigation_tools(runtime_tools)
@@ -471,40 +515,18 @@ def make_langchain_deep_agents_program(
     return run_langchain_deep_agents_wikispeedia_program
 
 
-def load_taskset(config: WikispeediaTasksetConfig) -> WikispeediaTaskset:
-    pair_cache: dict[str, tuple[list[WikiPair], list[WikiPair]]] = {}
+async def run_langchain_deep_agents_wikispeedia_program(
+    task: vf.Task, state: vf.State, harness: WikispeediaHarness
+) -> vf.State:
+    return await make_langchain_deep_agents_program(
+        max_turns=harness.config.max_turns,
+        timeout_seconds=harness.config.timeout_seconds,
+    )(task, state)
 
-    def pairs() -> tuple[list[WikiPair], list[WikiPair]]:
-        if "pairs" not in pair_cache:
-            pair_cache["pairs"] = load_wiki_graph(config.cache_dir).split_pairs(
-                train_size=config.train_size,
-                eval_size=config.eval_size,
-                min_dist=config.min_path_length,
-                max_dist=config.max_path_length,
-                eval_target_fraction=config.eval_target_fraction,
-                seed=config.split_seed,
-                stratify=config.stratify_path_length,
-            )
-        return pair_cache["pairs"]
 
-    def build_train() -> Dataset:
-        train, _ = pairs()
-        return build_dataset(
-            load_wiki_graph(config.cache_dir),
-            train,
-            links_only=config.links_only,
-            max_turns=config.max_turns,
-        )
-
-    def build_eval() -> Dataset:
-        _, eval_ = pairs()
-        return build_dataset(
-            load_wiki_graph(config.cache_dir),
-            eval_,
-            links_only=config.links_only,
-            max_turns=config.max_turns,
-        )
-
+def load_taskset(
+    config: WikispeediaTasksetConfig,
+) -> WikispeediaTaskset:
     rewards = [reached_target]
     metrics = [
         path_length,
@@ -530,38 +552,40 @@ def load_taskset(config: WikispeediaTasksetConfig) -> WikispeediaTaskset:
     else:
         metrics.insert(0, path_efficiency)
 
-    return WikispeediaTaskset(
-        source=build_train,
-        eval_source=build_eval,
-        taskset_id="langchain-deep-agents-wikispeedia",
-        system_prompt=system_prompt(allow_go_back=config.allow_go_back),
-        toolsets=[
-            load_toolset(
-                cache_dir=config.cache_dir,
-                allow_go_back=config.allow_go_back,
-            )
-        ],
-        rewards=rewards,
-        metrics=metrics,
-        config=config,
+    taskset = WikispeediaTaskset(config=config)
+    taskset.taskset_id = "langchain-deep-agents-wikispeedia"
+    taskset.system_prompt = normalize_system_prompt(
+        system_prompt(allow_go_back=config.allow_go_back),
+        field_name="taskset.system_prompt",
     )
+    taskset.add_toolset(
+        load_toolset(
+            cache_dir=config.cache_dir,
+            allow_go_back=config.allow_go_back,
+        )
+    )
+    for reward in rewards:
+        taskset.add_reward(reward)
+    for metric in metrics:
+        taskset.add_metric(metric)
+    return taskset
 
 
-def load_harness(config: WikispeediaHarnessConfig) -> WikispeediaHarness:
-    return WikispeediaHarness(
-        program=make_langchain_deep_agents_program(
-            max_turns=config.max_turns,
-            timeout_seconds=config.timeout_seconds,
-        ),
-        updates=[restore_agent_completion],
-        config=config,
-    )
+def load_harness(
+    config: WikispeediaHarnessConfig,
+) -> WikispeediaHarness:
+    harness = WikispeediaHarness(config=config)
+    harness.add_update(restore_agent_completion)
+    return harness
+
+
+class WikispeediaEnvConfig(vf.EnvConfig):
+    taskset: WikispeediaTasksetConfig = WikispeediaTasksetConfig()
+    harness: WikispeediaHarnessConfig = WikispeediaHarnessConfig()
 
 
 def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
-    """Load the v1 Wikispeedia taskset with a LangChain Deep Agents harness."""
-
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )
