@@ -152,14 +152,18 @@ def schedule_to_explainer(schedule: SlotProgram, *, judge_members: set[str]) -> 
             else:
                 sentences.append(f"To start, {who} gave their answer.")
         else:
-            opener = "Finally, " if i == len(speaking) - 1 and len(speaking) > 2 else "Then "
+            opener = (
+                "Finally, " if i == len(speaking) - 1 and len(speaking) > 2 else "Then "
+            )
             if together:
                 sentences.append(
                     f"{opener}they each read everything said so far and wrote a reply "
                     f"at the same time, {_unseen_reply(len(slot.agents))}."
                 )
             else:
-                sentences.append(f"{opener}{who} read everything said so far and replied.")
+                sentences.append(
+                    f"{opener}{who} read everything said so far and replied."
+                )
 
     closing = "You're now looking at everything they wrote."
     last = speaking[-1]

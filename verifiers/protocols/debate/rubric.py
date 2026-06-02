@@ -408,9 +408,7 @@ class DebateRubric(MultiAgentRubric):
                 episode["truth_member_won"] = float(winner == self.truth_member)
 
         debaters = [
-            (mid, m)
-            for mid, m in snaps.items()
-            if mid != "judge" and m["commits"]
+            (mid, m) for mid, m in snaps.items() if mid != "judge" and m["commits"]
         ]
         if len(debaters) >= 2:
             (_, a), (_, b) = debaters[0], debaters[1]

@@ -372,8 +372,8 @@ _matcher:
     prompt = messages[1]["content"]
     assert "Solve fully.\n\nWhat is the threshold?" in prompt
     assert "Work through the problem before giving the answer." in prompt
-    assert "After your reasoning" in prompt
-    assert "<answer>shortest standalone final answer</answer>" in prompt
+    assert "End your response with" in prompt
+    assert "a <answer> tag containing shortest standalone final answer" in prompt
 
 
 def test_hf_singleturn_accepts_prompt_pack(
@@ -438,8 +438,8 @@ _matcher:
 
     prompt = env.get_dataset()[0]["prompt"][1]["content"]
     assert "Reason first." in prompt
-    assert prompt.count("After your reasoning") == 1
-    assert "<answer>final answer</answer>" in prompt
+    assert prompt.count("End your response with") == 1
+    assert "a <answer> tag containing final answer" in prompt
     rubric = env.rubric.rubrics[0]
     assert rubric.judge_system_prompt == "PACK GRADER"
     assert rubric.judge_model == "gpt-test-mini"
