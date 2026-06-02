@@ -150,9 +150,11 @@ def maybe_judge(
     client: Client | None,
     model: str,
 ) -> JudgeRubric | None:
-    """Build a JudgeRubric iff the pack declares the template."""
+    """Build a JudgeRubric iff the pack declares the template AND a client
+    is available. Otherwise return None — score-time callers raise
+    ``vf.Error`` if they actually need the missing piece."""
     tmpl = prompts.judges.get(kind)
-    if tmpl is None:
+    if tmpl is None or client is None:
         return None
     return JudgeRubric(
         parser=Parser(),
@@ -406,9 +408,7 @@ class DebateRubric(MultiAgentRubric):
                 episode["truth_member_won"] = float(winner == self.truth_member)
 
         debaters = [
-            (mid, m)
-            for mid, m in snaps.items()
-            if mid != "judge" and m["latest_had_answer"]
+            (mid, m) for mid, m in snaps.items() if mid != "judge" and m["commits"]
         ]
         if len(debaters) >= 2:
             (_, a), (_, b) = debaters[0], debaters[1]

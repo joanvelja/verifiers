@@ -18,6 +18,7 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatResponse,
     OpenAITool,
     handle_openai_overlong_prompt,
+    retry_on_error_finish_reason,
 )
 from verifiers.api_profile import ApiProfile
 from verifiers.types import SamplingArgs, State
@@ -195,6 +196,19 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             **extra_body,
         )
 
+        return await self._post_token_response(body=body, extra_headers=extra_headers)
+
+    @retry_on_error_finish_reason
+    async def _post_token_response(
+        self, *, body: dict[str, Any], extra_headers: Any
+    ) -> OpenAIChatResponse:
+        """Direct ``/chat/completions/tokens`` (TITO) producer.
+
+        The two MITO branches above delegate to ``super().get_native_response``
+        and so inherit the base method's ``finish_reason='error'`` retry; wrapping
+        this third producer keeps every ChatCompletion response on the same retry
+        without double-wrapping the delegated paths.
+        """
         return await self.client.post(
             "/chat/completions/tokens",
             body=body,
