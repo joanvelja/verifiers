@@ -5,7 +5,7 @@ import logging
 import re
 from typing import Any
 
-from .fields import FieldSpec
+from .fields import EnumScoring, FieldSpec, classify_enum
 
 _log = logging.getLogger(__name__)
 
@@ -42,7 +42,12 @@ def _coerce(value: str, target_type: type) -> Any:
         return None
 
 
-def parse(text: str, schema: dict[str, type]) -> dict[str, Any] | None:
+def parse(
+    text: str,
+    schema: dict[str, type],
+    enum_values: Mapping[str, tuple[str, ...]] | None = None,
+) -> dict[str, Any] | None:
+    enum_values = enum_values or {}
     xml_matches = _XML_TAG_RE.findall(text)
     if not xml_matches:
         return None
@@ -51,12 +56,21 @@ def parse(text: str, schema: dict[str, type]) -> dict[str, Any] | None:
     for tag, content in xml_matches:
         if tag not in schema:
             continue
+        value = content.strip()
+        allowed = enum_values.get(tag)
+        if allowed is not None:
+            # Enum field: the LAST occurrence holding an allowed token wins.
+            # Ignores template echoes (invalid tokens) and earlier in-<reasoning>
+            # restatements a weak judge may emit before its final verdict.
+            if classify_enum(value, allowed).is_valid:
+                result[tag] = value
+            continue
         if tag in seen:
             raise ValueError(
                 f"Duplicate XML tag '{tag}' in response — ambiguous commit"
             )
         seen.add(tag)
-        coerced = _coerce(content.strip(), schema[tag])
+        coerced = _coerce(value, schema[tag])
         if coerced is not None:
             result[tag] = coerced
     return result or None
@@ -75,35 +89,45 @@ def normalize_fields(
 
 def extract_fields(text: str, specs: dict[str, FieldSpec]) -> dict[str, Any] | None:
     type_map = {k: v.type for k, v in specs.items()}
-    raw = parse(text, type_map)
+    enum_values = {
+        k: v.scoring.values
+        for k, v in specs.items()
+        if isinstance(v.scoring, EnumScoring)
+    }
+    raw = parse(text, type_map, enum_values)
     if raw is None:
         return None
     return normalize_fields(raw, specs)
 
 
 def generate_format_instructions(fields: Mapping[str, FieldSpec]) -> str:
+    # Describe each tag WITHOUT a fillable ``<tag>PLACEHOLDER</tag>`` exemplar.
+    # Weak models copy the placeholder verbatim (e.g. echoing "YOUR DECISION"),
+    # and the placeholder's own tags get duplicated — both then fail the strict
+    # parser. Naming the tag + its allowed content conveys the format without
+    # the copy-bait.
     from .fields import BinaryScoring, EnumScoring, NumericScoring
 
-    lines = [
-        "After your reasoning, you MUST include the following XML tags at the end of your response:"
-    ]
+    parts: list[str] = []
     for name, spec in fields.items():
         scoring = spec.scoring
         if isinstance(scoring, BinaryScoring):
-            lines.append(
-                f"<{name}>{scoring.true_value} or {scoring.false_value}</{name}>"
+            parts.append(
+                f"a <{name}> tag containing either {scoring.true_value} or {scoring.false_value}"
             )
         elif isinstance(scoring, EnumScoring):
-            vals = ", ".join(scoring.values)
-            lines.append(
-                f"<{name}> YOUR {name.upper()} </{name}>  (exactly one of: {vals})"
+            parts.append(
+                f"a <{name}> tag containing exactly one of: {', '.join(scoring.values)}"
             )
         elif isinstance(scoring, NumericScoring):
-            lines.append(
-                f"<{name}>number between {scoring.min_val} and {scoring.max_val}</{name}>"
+            parts.append(
+                f"a <{name}> tag containing a number between {scoring.min_val} and {scoring.max_val}"
             )
         elif spec.description:
-            lines.append(f"<{name}>{spec.description}</{name}>")
+            parts.append(f"a <{name}> tag containing {spec.description}")
         else:
-            lines.append(f"<{name}>your {name} here ({spec.type.__name__})</{name}>")
-    return "\n".join(lines)
+            parts.append(f"a <{name}> tag containing your {name}")
+    if not parts:
+        return ""
+    body = parts[0] if len(parts) == 1 else ", then ".join(parts)
+    return f"End your response with {body}. Write nothing after the final tag."

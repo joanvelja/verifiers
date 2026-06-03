@@ -84,6 +84,13 @@ class DebatePrompts:
     opponent_wrap: dict[str, jinja2.Template] | None
     judges: dict[str, JudgeTemplate]
     source_ref: str
+    # Tag-mechanics capability flag (NOT a pack-declared field — the pack stays
+    # VISIBILITY-only). Auto-derived by prime-rl from the renderer's
+    # enable_thinking detection. True => the chat template already injects
+    # <think> in the prompt, so the pack does NOT emit the "Use <tag>...</tag>"
+    # sentence. The privacy/visibility statement is kept either way. Safe
+    # default False = non-thinking-native model, pack owns the tag sentence.
+    native_thinking: bool = False
 
     def __post_init__(self) -> None:
         for kind, template in self.judges.items():
@@ -228,7 +235,19 @@ class DebatePrompts:
         if vis == "disabled":
             return None
         desc = _THINK_DESCRIPTIONS.get(vis, "")
-        return f"Use <{self.think_tag}>...</{self.think_tag}> tags for your reasoning. {desc}"
+        # Tag-mechanics sentence is emitted ONLY for non-thinking-native models.
+        # When native_thinking is True the chat template already injects <think>
+        # in the prompt, so re-instructing the model to "use <think>...</think>"
+        # invites it to RE-OPEN the tag in its public content (the leak this
+        # fixes). The privacy/visibility statement is ALWAYS kept.
+        parts: list[str] = []
+        if not self.native_thinking:
+            parts.append(
+                f"Use <{self.think_tag}>...</{self.think_tag}> tags for your reasoning."
+            )
+        if desc:
+            parts.append(desc)
+        return " ".join(parts) or None
 
     def _field_instructions(self, role: str, trigger: str) -> str | None:
         role_fields = self.fields.get(role)
@@ -253,8 +272,14 @@ def build_context(
     round_index: int,
     num_rounds: int,
     answer: str = "",
+    schedule_explainer: str = "",
 ) -> dict[str, Any]:
-    """Build Jinja template context for rendering."""
+    """Build Jinja template context for rendering.
+
+    ``schedule_explainer`` is a schedule-level (turn-invariant) description of
+    the debate structure, injected into the judge's system prompt. It is safe
+    in the system block precisely because it does not vary per round/phase.
+    """
     return {
         "task_prompt": task_prompt,
         "viewer_id": viewer_id,
@@ -265,6 +290,7 @@ def build_context(
         "is_last_round": round_index == num_rounds - 1,
         "answer": answer,
         "has_assigned_answer": bool(answer),
+        "schedule_explainer": schedule_explainer,
     }
 
 
@@ -274,11 +300,16 @@ def build_context(
 
 
 @functools.lru_cache(maxsize=32)
-def resolve_prompts(ref: str) -> DebatePrompts:
+def resolve_prompts(ref: str, *, native_thinking: bool = False) -> DebatePrompts:
     """Load and compile a prompt pack from YAML.
 
     If *ref* contains no '/' or '.', treat as built-in name (looked up in
     ``prompts/`` subdir). Otherwise treat as file path.
+
+    ``native_thinking`` is the tag-mechanics capability flag (auto-derived by
+    prime-rl from the renderer's enable_thinking detection — NOT pack-declared).
+    It is part of the lru_cache key so a pack resolved under both polarities
+    yields distinct, correctly-cached DebatePrompts instances.
     """
     ref = ref.strip()
     if "/" not in ref and "." not in ref:
@@ -315,6 +346,7 @@ def resolve_prompts(ref: str) -> DebatePrompts:
         opponent_wrap=opponent_wrap,
         judges=judges,
         source_ref=str(path),
+        native_thinking=native_thinking,
     )
 
 

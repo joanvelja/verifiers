@@ -7,7 +7,16 @@ Diagnostics (weight-0 telemetry; never feed reward):
     per-member: turns, parse_error_count, num_commits, num_unique_commits,
                 accuracy, extraction_failed, initial_correct, final_correct
     episode:    agreement, truth_member_correct (judge-less packs only),
-                episode_scalar (1 iff judge picked truth_member), winner
+                judge_correct_vs_gt, winner
+
+``episode_scalar`` is the TRUTH-SEAT pick rate: 1 iff the judge picked the
+seat that was assigned the truth (``truth_member``), else 0. It is a
+structural property of seat assignment, NOT judge accuracy — under
+self-play there is no assigned truth seat, so it is uninformative there.
+GT-vs-judge accuracy is the separate weight-0 ``judge_correct_vs_gt``
+diagnostic. Neither quantity ever feeds reward (the run is air-gapped from
+ground truth); the only training signal is the per-member ±1
+``MemberScore.reward`` from the judge verdict.
 """
 
 from typing import Any
@@ -256,6 +265,10 @@ class DebateRubric(MultiAgentRubric):
 
         return MARScore(
             members=members,
+            # TRUTH-SEAT pick rate (1 iff judge picked the seat assigned the
+            # truth), NOT judge accuracy and NOT reward. Air-gapped: GT-vs-
+            # judge correctness is the weight-0 ``judge_correct_vs_gt``
+            # metric below; training signal is per-member MemberScore.reward.
             episode_scalar=1.0 if winner == self.truth_member else 0.0,
             episode_metrics=episode_metrics,
             episode_categorical=episode_categorical,
@@ -315,7 +328,17 @@ class DebateRubric(MultiAgentRubric):
 
         Episode phase (``episode_metrics``):
           * ``agreement``: matcher verdict on the two debaters' final
-            answers; present only when both have committed.
+            answers. Computed over the final-answer fallback — every
+            debater that committed an answer at any point (``commits``
+            non-empty), keyed off ``commits[-1]`` — not only the subset
+            whose LATEST step re-extracted cleanly. The earlier gate
+            (``latest_had_answer``) silently dropped debates where a
+            committed debater's last turn failed to parse.
+          * ``judge_correct_vs_gt``: 1 iff the winning seat's final answer
+            matches ground truth, else 0; emitted only when a real seat won
+            (not tie / no-decision) and that seat committed an answer.
+            Air-gapped telemetry — GT-coupled, weight-0, MUST NEVER feed
+            reward. Distinct from ``episode_scalar`` (truth-seat pick rate).
           * ``truth_member_correct``: judge-less test packs only; grades
             the truth-side debater's final answer vs ground truth.
         """
@@ -353,10 +376,14 @@ class DebateRubric(MultiAgentRubric):
                 )
             )
 
+        # Final-answer fallback: a debater "committed a final answer" iff it
+        # ever produced a parseable answer (``commits`` non-empty); its final
+        # answer is ``commits[-1]`` and ``latest_spec`` is that commit's spec
+        # (member_snapshot only overwrites latest_spec on a successful
+        # commit, so the two stay consistent). Gating on ``latest_had_answer``
+        # instead silently dropped debates whose last turn failed to parse.
         debaters = [
-            (mid, m)
-            for mid, m in snaps.items()
-            if mid != "judge" and m["latest_had_answer"]
+            (mid, m) for mid, m in snaps.items() if mid != "judge" and m["commits"]
         ]
         if len(debaters) >= 2:
             (_, a), (_, b) = debaters[0], debaters[1]
@@ -366,6 +393,25 @@ class DebateRubric(MultiAgentRubric):
                     b["commits"][-1], a["commits"][-1], question, spec, "matcher", state
                 )
             )
+
+        # Air-gapped telemetry (#9): did the seat the judge crowned actually
+        # match ground truth? GT-coupled, weight-0, MUST NEVER feed reward —
+        # it is observability only. Distinct from episode_scalar (truth-seat
+        # pick rate). Emitted only for a real winning seat that committed an
+        # answer; absent on tie / no-decision / unparseable winner.
+        if target and winner is not None and winner != "tie":
+            w = snaps.get(winner)
+            if w is not None and w["commits"]:
+                episode["judge_correct_vs_gt"] = float(
+                    await self.verdict(
+                        w["commits"][-1],
+                        target,
+                        question,
+                        w["latest_spec"],
+                        "grader",
+                        state,
+                    )
+                )
 
         if winner is None and "judge" not in self.prompts.fields and target:
             truth = snaps.get(self.truth_member)

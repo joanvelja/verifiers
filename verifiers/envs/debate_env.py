@@ -13,6 +13,7 @@ inherited from :class:`MultiAgentEnv`.
 """
 
 import logging
+import re
 from typing import Any, Callable
 
 from verifiers.clients import Client
@@ -29,6 +30,7 @@ from verifiers.envs.multi_agent_kernel import (
     StaticSchedule,
     TurnSlot,
     Utterance,
+    schedule_to_explainer,
 )
 from verifiers.rubrics.debate_rubric import question_from_state
 from verifiers.envs.multi_agent_env import (
@@ -83,6 +85,14 @@ class DebateEnv(MultiAgentEnv):
             agent_bindings_fn=agent_bindings_fn,
             think_tag=prompts.think_tag,
             **kwargs,
+        )
+
+        # Plain-language description of the turn schedule, injected into the
+        # judge's system prompt as {{ schedule_explainer }} (see selfplay.yaml).
+        # judge_members={"judge"} matches DebateRubric's winner set
+        # (valid_winners = members - {"judge"}); keep both in sync.
+        self._schedule_explainer = schedule_to_explainer(
+            schedule, judge_members={"judge"}
         )
 
         # Cross-check 1: env.members must equal rubric.members exactly.
@@ -309,12 +319,18 @@ class DebateEnv(MultiAgentEnv):
         """
         content = _coerce_text_content(response.message.content)
         reasoning = response.message.reasoning_content or None
+        tag = self.prompts.think_tag
         if reasoning is not None:
-            tag = self.prompts.think_tag
             raw = f"<{tag}>\n{reasoning}\n</{tag}>\n\n{content}"
         else:
             raw = content
-        return raw, ContentChannels(public=content.strip(), private=reasoning)
+        # ``raw`` is KEPT verbatim (own-turn replay + KV monotonic-prefix
+        # reuse). Only the opponent/judge-visible public view is sanitised:
+        # strip re-emitted reasoning tags and collapse duplicate field tags
+        # left by the reasoning parser splitting on the first </think>.
+        specs = self.prompts.get_field_specs(member_id, slot.phase) or {}
+        public = _strip_public_noise(content, tag, frozenset(specs)).strip()
+        return raw, ContentChannels(public=public, private=reasoning)
 
     # -- prompt construction -------------------------------------------------
 
@@ -391,6 +407,7 @@ class DebateEnv(MultiAgentEnv):
             round_index=round_index,
             num_rounds=num_rounds,
             answer=state["answer"],
+            schedule_explainer=self._schedule_explainer,
         )
 
     def _render_own_turn(
@@ -486,6 +503,45 @@ class DebateEnv(MultiAgentEnv):
 # ---------------------------------------------------------------------------
 
 
+def _strip_public_noise(text: str, think_tag: str, field_tags: frozenset[str]) -> str:
+    """Sanitise the PUBLIC (opponent/judge-visible) channel only.
+
+    The ``--reasoning-parser`` splits on the FIRST ``</think>`` and is not
+    robust to a thinking-native model RE-EMITTING the reasoning tag: a
+    second ``<think>...</think>`` (and any schema tags restated inside it)
+    leaks past the split into ``content`` -> the public argument. Two
+    targeted, structure-preserving passes:
+
+      1. Reasoning never belongs on the public channel (it is already on
+         the private channel), so drop every stray ``<think>``/``</think>``
+         literal. A well-formed public argument contains neither.
+      2. The opponent/judge should see one self-contained commit, and the
+         strict parser raises on a duplicated NON-enum schema tag
+         (``extract_fields`` -> ``None`` -> ``extraction_failed``). For each
+         declared field tag that appears more than once as a well-formed
+         ``<tag>...</tag>`` block, keep only the LAST occurrence — the
+         model's final commit — and remove the earlier blocks.
+
+    Surgical by construction: only the reasoning-tag literals and duplicate
+    declared-field blocks are removed. Prose between tags is never touched,
+    so real argument text cannot be dropped. This operates on the public
+    string ONLY; the caller keeps ``raw_content`` verbatim (own-turn replay /
+    KV monotonic-prefix reuse depend on it) and never routes it through here.
+    """
+    cleaned = re.sub(rf"</?{re.escape(think_tag)}>", "", text)
+    for tag in field_tags:
+        block = re.compile(rf"<{re.escape(tag)}>.*?</{re.escape(tag)}>", re.DOTALL)
+        matches = list(block.finditer(cleaned))
+        if len(matches) <= 1:
+            continue
+        # Drop every block but the last (final commit); rebuild around the
+        # survivor so surrounding prose and the survivor's text are intact.
+        survivor = matches[-1]
+        prefix = block.sub("", cleaned[: survivor.start()])
+        cleaned = prefix + cleaned[survivor.start() :]
+    return cleaned
+
+
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
@@ -541,6 +597,7 @@ def load_environment(**kwargs: Any) -> DebateEnv:
     prompts = _resolve_prompts_arg(
         kwargs.pop("prompts_ref", None),
         kwargs.pop("prompts", None),
+        native_thinking=bool(kwargs.pop("native_thinking", False)),
     )
     judge_client = _build_judge_client(
         explicit=kwargs.pop("judge_client", None),
@@ -567,20 +624,36 @@ def load_environment(**kwargs: Any) -> DebateEnv:
 
 
 def _resolve_prompts_arg(
-    prompts_ref: str | None, prompts: DebatePrompts | None
+    prompts_ref: str | None,
+    prompts: DebatePrompts | None,
+    *,
+    native_thinking: bool = False,
 ) -> DebatePrompts:
     """Return a DebatePrompts from whichever source the caller provided.
 
     Exactly one of ``prompts_ref`` (registry lookup) or ``prompts`` (typed
     object) must be given. Pure conversion; ``DebatePrompts.__post_init__``
     runs the intrinsic pack validation.
+
+    ``native_thinking`` is the renderer-derived tag-mechanics capability flag.
+    It only applies to the registry-lookup path: a caller passing an
+    already-built ``prompts`` object owns its own ``native_thinking`` and we
+    must not silently override it — raise if the two disagree so the
+    contradiction is loud, not papered over.
     """
     if prompts is not None and prompts_ref is not None:
         raise ValueError("Provide exactly one of 'prompts_ref' or 'prompts'")
     if prompts is not None:
+        if native_thinking and not prompts.native_thinking:
+            raise ValueError(
+                "Pre-built 'prompts' has native_thinking=False but the caller "
+                "passed native_thinking=True. Resolve the pack via 'prompts_ref' "
+                "to apply the renderer-derived flag, or build the DebatePrompts "
+                "with the intended native_thinking value."
+            )
         return prompts
     if prompts_ref is not None:
-        return resolve_prompts(prompts_ref)
+        return resolve_prompts(prompts_ref, native_thinking=native_thinking)
     raise ValueError("Must provide either 'prompts_ref' or 'prompts'")
 
 

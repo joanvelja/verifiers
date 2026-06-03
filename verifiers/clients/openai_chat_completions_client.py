@@ -1,3 +1,4 @@
+import asyncio
 import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
@@ -88,6 +89,36 @@ def handle_openai_overlong_prompt(func):
             if any(phrase in error_text for phrase in context_length_phrases):
                 raise OverlongPromptError from e
             raise
+
+    return wrapper
+
+
+def retry_on_error_finish_reason(func):
+    """Retry a chat completion when the provider returns finish_reason='error'.
+
+    OpenRouter surfaces a transient upstream-provider failure as a 200 response
+    with ``choices[0].finish_reason == 'error'`` (not an HTTP error), so neither
+    the OpenAI SDK nor the overlong-prompt handler retries it. Re-call up to
+    ``ClientConfig.max_retries`` with exponential backoff. Retrying the single
+    call (vs. the rollout-level retry, which would regenerate the whole debate)
+    keeps a transient judge hiccup from discarding every debater turn. If still
+    errored after the budget, the response is returned so
+    ``raise_from_native_response`` surfaces it loudly.
+    """
+
+    @functools.wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        max_retries = self._config.max_retries if self._config is not None else 0
+        for attempt in range(max_retries + 1):
+            response = await func(self, *args, **kwargs)
+            choices = getattr(response, "choices", None)
+            finish_reason = (
+                getattr(choices[0], "finish_reason", None) if choices else None
+            )
+            if finish_reason != "error" or attempt == max_retries:
+                return response
+            await asyncio.sleep(min(2**attempt, 30))
+        return response
 
     return wrapper
 
@@ -241,6 +272,7 @@ class OpenAIChatCompletionsClient(
             function=function,
         )
 
+    @retry_on_error_finish_reason
     @handle_openai_overlong_prompt
     async def get_native_response(
         self,
@@ -329,6 +361,11 @@ class OpenAIChatCompletionsClient(
         if not len(response.choices) == 1:
             raise InvalidModelResponseError(
                 f"Model returned {len(response.choices)} choices, expected 1"
+            )
+        if getattr(response.choices[0], "finish_reason", None) == "error":
+            raise InvalidModelResponseError(
+                "Provider returned finish_reason='error' (transient upstream "
+                "failure) after exhausting retries"
             )
         message = response.choices[0].message
         has_content = bool(content_to_text(getattr(message, "content", None)))

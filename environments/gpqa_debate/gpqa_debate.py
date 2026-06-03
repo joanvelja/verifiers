@@ -43,6 +43,12 @@ All optional. Omitted keys inherit the vf-eval top-level model/provider.
     seed               int      choice-shuffling seed                 0
     schedule           list     override SCHEDULE; list of dicts      DEFAULT_SCHEDULE
     truth_member       str      member credited as winning seat        "debater_a"
+    native_thinking    bool     auto-derived by prime-rl from the     False
+                                renderer enable_thinking; True
+                                suppresses the in-prompt "Use
+                                <think>...</think>" tag sentence
+                                (the chat template owns <think>).
+                                The privacy statement is always kept.
 
     # Self-play / OpenRouter bindings (each optional; mutually exclusive
     # with the external-opponent kwargs below)
@@ -389,6 +395,7 @@ def load_environment(
     seed: int = 0,
     schedule: list[dict] | None = None,
     truth_member: str = "debater_a",
+    native_thinking: bool = False,
     # Self-play / OpenRouter provider-pinning path
     debater_model: str | None = None,
     judge_model: str | None = None,
@@ -494,6 +501,7 @@ def load_environment(
             members=["debater_a", "debater_b", "judge"],
             truth_member=truth_member,
             prompts_ref=prompts_ref,
+            native_thinking=native_thinking,
             agent_bindings_fn=bindings_fn,
             dataset=build_dataset,
             eval_dataset=build_eval_dataset,
@@ -527,6 +535,7 @@ def load_environment(
         members=["debater_a", "debater_b", "judge"],
         truth_member=truth_member,
         prompts_ref=prompts_ref,
+        native_thinking=native_thinking,
         agent_bindings=agent_bindings or None,
         dataset=build_dataset,
         eval_dataset=build_eval_dataset,

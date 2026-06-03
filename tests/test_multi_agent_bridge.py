@@ -244,6 +244,28 @@ def test_multi_agent_rubric_converts_scoring_error_to_marscore() -> None:
     }
 
 
+def test_multi_agent_rubric_prompt_too_long_records_error() -> None:
+    # Prove-it regression for the fan-out crash (#16). A prompt_too_long rollout
+    # must set state["error"], not only an errored mar_score. Without it the
+    # fan-out bridge sees a declared member with no trajectory step + error=None
+    # and RAISES (see test_bridge_rejects_non_errored_member_with_no_steps),
+    # which kills the whole orchestrator run instead of dropping one bad rollout.
+    # With the error set, the bridge drops it cleanly
+    # (see test_bridge_allows_errored_member_with_no_steps).
+    import asyncio
+
+    state = {"prompt_too_long": True}
+    asyncio.run(_FakeMARubric().score_rollout(state))
+
+    assert state.get("error") is not None, (
+        "prompt_too_long must record state['error'] so the bridge drops the "
+        "errored rollout instead of raising on a member with no trajectory steps"
+    )
+    mar = state["mar_score"]
+    assert mar.episode_metrics == {"errored_rollout": 1.0}
+    assert mar.episode_error["error_type"] == "prompt_too_long"
+
+
 def test_state_to_output_projects_marscore_and_member_metrics(make_state) -> None:
     state = make_state(reward=123.0)
     state["task"] = "debate_task"
