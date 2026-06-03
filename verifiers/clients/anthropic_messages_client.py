@@ -377,6 +377,7 @@ class AnthropicMessagesClient(
 
         # Remove internal framework keys not recognized by the Anthropic SDK
         kwargs.pop("state", None)
+        kwargs.pop("lineage_key", None)
 
         if tools:
             return await self.client.messages.create(

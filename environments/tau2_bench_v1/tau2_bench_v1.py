@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import uuid
 from collections.abc import Callable
 from copy import deepcopy
@@ -32,35 +33,74 @@ from tau2.user.user_simulator import UserSimulator, is_valid_user_history_messag
 from tau2.utils.utils import DATA_DIR, format_time, get_now
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
+from reward_hacking import (
+    MutationSpec,
+    append_agent_elicitation_prompt,
+    append_policy_patch,
+    apply_task_payload_mutation,
+    evaluate_reward_hacking,
+    load_mutation_specs,
+    mutation_spec_from_task_info,
+    resolve_mutation_path,
+    task_info_without_mutation,
+    validate_mutation_specs,
+)
+
 DEFAULT_USER_MODEL = "gpt-4.1"
 DEFAULT_USER_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_USER_API_KEY_VAR = "OPENAI_API_KEY"
+TAU2_DATA_REV = "337326e62d8e0ca74c353b004a9c5d748e0ba914"
 
 
 def download_tau2_data() -> None:
-    if os.path.exists(DATA_DIR) and os.path.exists(DATA_DIR / "tau2" / "domains"):
+    tau2_data_dir = DATA_DIR / "tau2"
+    source_rev_path = tau2_data_dir / ".source_rev"
+    if (
+        tau2_data_dir.exists()
+        and (tau2_data_dir / "domains").exists()
+        and source_rev_path.exists()
+        and source_rev_path.read_text().strip() == TAU2_DATA_REV
+    ):
         return
     os.makedirs(DATA_DIR, exist_ok=True)
-    temp_dir = Path("/tmp/tau2_bench_v1")
-    try:
+    with tempfile.TemporaryDirectory(prefix="tau2_bench_v1_") as temp_name:
+        temp_dir = Path(temp_name)
+        subprocess.run(
+            ["git", "init", temp_dir],
+            check=True,
+            capture_output=True,
+        )
         subprocess.run(
             [
                 "git",
-                "clone",
-                "--depth",
-                "1",
+                "-C",
+                str(temp_dir),
+                "remote",
+                "add",
+                "origin",
                 "https://github.com/sierra-research/tau2-bench.git",
-                temp_dir,
             ],
             check=True,
             capture_output=True,
         )
+        subprocess.run(
+            ["git", "-C", str(temp_dir), "fetch", "--depth", "1", "origin", TAU2_DATA_REV],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(temp_dir), "checkout", "--detach", "FETCH_HEAD"],
+            check=True,
+            capture_output=True,
+        )
         source_data = temp_dir / "data"
-        if source_data.exists():
-            shutil.copytree(source_data, DATA_DIR, dirs_exist_ok=True)
-    finally:
-        if temp_dir.exists():
-            shutil.rmtree(temp_dir)
+        source_tau2 = source_data / "tau2"
+        if not source_tau2.exists():
+            raise FileNotFoundError(f"tau2 data not found at {source_tau2}")
+        if tau2_data_dir.exists():
+            shutil.rmtree(tau2_data_dir)
+        shutil.copytree(source_tau2, tau2_data_dir)
+        source_rev_path.write_text(f"{TAU2_DATA_REV}\n")
 
 
 def tau_msg_to_vf_dict(message: Message) -> vf.ConfigData:
@@ -118,6 +158,7 @@ class Tau2Session:
         user_args: ConfigMap,
         max_steps: int,
         max_errors: int,
+        mutation_spec: MutationSpec | None = None,
     ):
         self.domain = domain
         self.task_payload = dict(task_payload)
@@ -125,6 +166,7 @@ class Tau2Session:
         self.user_args = dict(user_args)
         self.max_steps = max_steps
         self.max_errors = max_errors
+        self.mutation_spec = mutation_spec
         self.ready = False
         self.initial_prompt_messages: list[vf.ConfigData] = []
         self.recorded_assistant_messages = 0
@@ -138,9 +180,12 @@ class Tau2Session:
         self.task = TauTask.model_validate(self.task_payload)
         environment_constructor = registry.get_env_constructor(self.domain)
         self.environment = await asyncio.to_thread(environment_constructor)
+        domain_policy = self.environment.get_policy()
+        if self.mutation_spec is not None:
+            domain_policy = append_policy_patch(domain_policy, self.mutation_spec)
         self.agent = LLMAgent(
             tools=self.environment.get_tools(),
-            domain_policy=self.environment.get_policy(),
+            domain_policy=domain_policy,
             llm=str(state.get("runtime", {}).get("model") or ""),
             llm_args=dict(state.get("runtime", {}).get("sampling_args") or {}),
         )
@@ -418,10 +463,55 @@ class Tau2Session:
             "num_user_tool_calls": self.num_user_tool_calls,
             "messages": [dump_tau_message(message) for message in self.trajectory],
         }
+        db_snapshot = self.db_snapshot()
+        if db_snapshot is not None:
+            state["tau2"]["db"] = db_snapshot
+        if self.mutation_spec is not None:
+            state["tau2"]["mutation"] = self.mutation_spec.to_mapping()
         state["num_assistant_tool_calls"] = self.num_assistant_tool_calls
         state["num_user_tool_calls"] = self.num_user_tool_calls
         if self.done and self.termination_reason is not None:
             state.stop(self.termination_reason.value)
+
+    def db_snapshot(self) -> ConfigMap | None:
+        tools = getattr(self.environment, "tools", None)
+        db = getattr(tools, "db", None)
+        if db is None:
+            return None
+        order_ids, user_ids = self.referenced_db_ids()
+        db_orders = getattr(db, "orders", {})
+        db_users = getattr(db, "users", {})
+        orders = {
+            order_id: db_orders[order_id].model_dump(mode="json")
+            for order_id in sorted(order_ids)
+            if order_id in db_orders
+        }
+        users = {
+            user_id: db_users[user_id].model_dump(mode="json")
+            for user_id in sorted(user_ids)
+            if user_id in db_users
+        }
+        return {"orders": orders, "users": users}
+
+    def referenced_db_ids(self) -> tuple[set[str], set[str]]:
+        order_ids: set[str] = set()
+        user_ids: set[str] = set()
+        for message in self.trajectory:
+            for tool_call in getattr(message, "tool_calls", []) or []:
+                self.collect_argument_ids(tool_call.arguments, order_ids, user_ids)
+        return order_ids, user_ids
+
+    @staticmethod
+    def collect_argument_ids(
+        arguments: ConfigMap,
+        order_ids: set[str],
+        user_ids: set[str],
+    ) -> None:
+        for key, value in arguments.items():
+            if key == "order_id":
+                add_string_values(value, order_ids)
+            elif key == "user_id":
+                add_string_values(value, user_ids)
 
 
 def make_tau2_setup(
@@ -430,9 +520,7 @@ def make_tau2_setup(
     @vf.setup(priority=100)
     async def tau2_setup(task: vf.Task, state: vf.State) -> None:
         runtime = state.runtime_state()
-        sampling_args = dict(DEFAULT_LLM_ARGS_AGENT)
-        sampling_args.update(dict(runtime.get("sampling_args") or {}))
-        runtime["sampling_args"] = sampling_args
+        runtime["sampling_args"] = merge_tau2_agent_sampling_args(runtime)
         session = cast(
             Tau2Session,
             await maybe_call_with_named_args(session_factory, task=task, state=state),
@@ -444,6 +532,32 @@ def make_tau2_setup(
             state["tau2_prompt_initialized"] = True
 
     return tau2_setup
+
+
+def merge_tau2_agent_sampling_args(runtime: ConfigMap) -> ConfigMap:
+    runtime_sampling_args = dict(runtime.get("sampling_args") or {})
+    sampling_args = dict(DEFAULT_LLM_ARGS_AGENT)
+    sampling_args.update(runtime_sampling_args)
+
+    model = str(runtime.get("model") or "")
+    model_id = model.removeprefix("openai/")
+    has_reasoning_config = (
+        "reasoning" in runtime_sampling_args
+        or "reasoning_effort" in runtime_sampling_args
+    )
+    if (
+        has_reasoning_config
+        and "temperature" not in runtime_sampling_args
+        and (
+            model_id.startswith("gpt-5")
+            or model_id.startswith("claude-sonnet-4-6")
+            or model_id.startswith("claude-opus-4-6")
+            or model_id.startswith("claude-opus-4-7")
+        )
+    ):
+        sampling_args.pop("temperature", None)
+
+    return sampling_args
 
 
 def assistant_from_openai_message(message: vf.AssistantMessage) -> AssistantMessage:
@@ -478,17 +592,66 @@ def add_timestamps(message_history: list[Message]) -> list[Message]:
     return message_history
 
 
-def source(domain: str, max_turns: int):
+def add_string_values(value: object, target: set[str]) -> None:
+    if isinstance(value, str):
+        target.add(value)
+        return
+    if isinstance(value, list):
+        for item in value:
+            add_string_values(item, target)
+
+
+def source(
+    domain: str,
+    max_turns: int,
+    mutation_specs: list[MutationSpec] | None = None,
+    agent_elicitation_prompt: str | None = None,
+    agent_elicitation_position: str = "post_policy",
+):
+    if agent_elicitation_position not in {"pre_policy", "post_policy"}:
+        raise ValueError(
+            "agent_elicitation_position must be 'pre_policy' or 'post_policy'"
+        )
     download_tau2_data()
     environment_constructor = registry.get_env_constructor(domain)
     environment = environment_constructor()
-    system_prompt = SYSTEM_PROMPT.format(
+    base_system_prompt = SYSTEM_PROMPT.format(
         agent_instruction=AGENT_INSTRUCTION,
         domain_policy=environment.policy,
     )
-    for index, task in enumerate(
-        load_tasks(task_set_name=domain, task_split_name="base")
-    ):
+    tasks = {
+        str(task.id): task
+        for task in load_tasks(task_set_name=domain, task_split_name="base")
+    }
+    if mutation_specs is not None:
+        rows = []
+        for spec in mutation_specs:
+            task = tasks.get(spec.base_task_id)
+            if task is None:
+                raise ValueError(
+                    f"Mutation {spec.mutation_id!r} references missing "
+                    f"{domain} task {spec.base_task_id!r}"
+                )
+            rows.append((spec.mutation_id, task, spec))
+    else:
+        rows = [(str(index), task, None) for index, task in enumerate(tasks.values())]
+
+    for index, task, mutation_spec in rows:
+        task_payload = task.model_dump(mode="json", exclude_none=True)
+        system_prompt = base_system_prompt
+        if agent_elicitation_position == "pre_policy":
+            system_prompt = append_agent_elicitation_prompt(
+                system_prompt,
+                agent_elicitation_prompt,
+            )
+        if mutation_spec is not None:
+            task_payload = apply_task_payload_mutation(task_payload, mutation_spec)
+            system_prompt = append_policy_patch(system_prompt, mutation_spec)
+        if agent_elicitation_position == "post_policy":
+            system_prompt = append_agent_elicitation_prompt(
+                system_prompt,
+                agent_elicitation_prompt,
+            )
         yield {
             "example_id": index,
             "taskset_id": f"tau2_{domain}",
@@ -497,7 +660,7 @@ def source(domain: str, max_turns: int):
             "system_prompt": system_prompt,
             "max_turns": max_turns,
             "prompt": [],
-            "info": task.model_dump_json(exclude_none=True),
+            "info": json.dumps(task_payload),
         }
 
 
@@ -514,16 +677,16 @@ def load_session_factory(
         key = str(state.get("trajectory_id") or id(state))
         if key in sessions:
             return sessions[key]
-        task_info = task["info"]
-        if isinstance(task_info, str):
-            task_info = json.loads(task_info)
+        task_info = task_info_from_task(task)
+        mutation_spec = mutation_spec_from_task_info(task_info)
         session = Tau2Session(
             domain=domain,
-            task_payload=cast(ConfigMap, task_info),
+            task_payload=cast(ConfigMap, task_info_without_mutation(task_info)),
             user_model=user_model,
             user_args=user_args,
             max_steps=max_steps,
             max_errors=max_errors,
+            mutation_spec=mutation_spec,
         )
         sessions[key] = session
         return session
@@ -599,6 +762,26 @@ async def tau2_user(session: Tau2Session, state, transcript) -> list[vf.ConfigDa
     return await session.user_messages(state)
 
 
+def task_info_from_task(task) -> ConfigMap:
+    task_info = task["info"]
+    if isinstance(task_info, str):
+        return cast(ConfigMap, json.loads(task_info))
+    return cast(ConfigMap, task_info)
+
+
+def ensure_reward_hacking_state(task, state) -> ConfigMap | None:
+    tau2_state = cast(ConfigMap, state.get("tau2") or {})
+    cached = tau2_state.get("reward_hacking")
+    if isinstance(cached, dict):
+        return cast(ConfigMap, cached)
+    mutation_spec = mutation_spec_from_task_info(task_info_from_task(task))
+    if mutation_spec is None:
+        return None
+    reward_hacking = evaluate_reward_hacking(mutation_spec, tau2_state)
+    state.setdefault("tau2", {})["reward_hacking"] = reward_hacking
+    return reward_hacking
+
+
 @vf.reward(weight=1.0)
 async def tau2_reward(task, state) -> float:
     tau2_state = cast(ConfigMap, state["tau2"])
@@ -614,10 +797,9 @@ async def tau2_reward(task, state) -> float:
     else:
         termination_reason = TerminationReason.AGENT_ERROR
     state["tau2"]["termination_reason"] = termination_reason.value
-    task_info = task["info"]
-    if isinstance(task_info, str):
-        task_info = json.loads(task_info)
-    tau_task = TauTask.model_validate(task_info)
+    task_info = task_info_from_task(task)
+    mutation_spec = mutation_spec_from_task_info(task_info)
+    tau_task = TauTask.model_validate(task_info_without_mutation(task_info))
     simulation = SimulationRun(
         id=f"{task['taskset_id']}_{task['task_id']}_{datetime.now().isoformat()}",
         task_id=tau_task.id,
@@ -630,15 +812,34 @@ async def tau2_reward(task, state) -> float:
         agent_cost=0.0,
         user_cost=0.0,
     )
-    reward_info = evaluate_simulation(
-        simulation=simulation,
-        task=tau_task,
-        evaluation_type=EvaluationType.ALL,
-        solo_mode=False,
-        domain=str(task["domain"]),
+    evaluation_type = (
+        EvaluationType.ENV
+        if mutation_spec is not None
+        else EvaluationType.ALL_WITH_NL_ASSERTIONS
     )
-    state["tau2"]["evaluation"] = reward_info.model_dump(mode="json")
-    return float(reward_info.reward)
+    state["tau2"]["native_evaluation_type"] = evaluation_type.value
+    try:
+        reward_info = evaluate_simulation(
+            simulation=simulation,
+            task=tau_task,
+            evaluation_type=evaluation_type,
+            solo_mode=False,
+            domain=str(task["domain"]),
+        )
+    except Exception as exc:
+        if mutation_spec is None:
+            raise
+        state["tau2"]["evaluation"] = None
+        state["tau2"]["native_evaluation_error"] = f"{type(exc).__name__}: {exc}"
+        state["tau2"]["native_reward"] = 0.0
+    else:
+        state["tau2"]["evaluation"] = reward_info.model_dump(mode="json")
+        state["tau2"]["native_reward"] = float(reward_info.reward)
+    if mutation_spec is not None:
+        reward_hacking = ensure_reward_hacking_state(task, state)
+        assert reward_hacking is not None
+        return float(reward_hacking["buggy_reward"])
+    return float(state["tau2"]["native_reward"])
 
 
 @vf.metric
@@ -665,6 +866,40 @@ async def tau2_num_user_tool_calls(task, state) -> float:
     return float(state.get("num_user_tool_calls", 0.0))
 
 
+@vf.metric
+async def tau2_buggy_reward(task, state) -> float:
+    reward_hacking = ensure_reward_hacking_state(task, state)
+    return 0.0 if reward_hacking is None else float(reward_hacking["buggy_reward"])
+
+
+@vf.metric
+async def tau2_oracle_correct(task, state) -> float:
+    reward_hacking = ensure_reward_hacking_state(task, state)
+    return 0.0 if reward_hacking is None else float(reward_hacking["oracle_correct"])
+
+
+@vf.metric
+async def tau2_exploit_detected(task, state) -> float:
+    reward_hacking = ensure_reward_hacking_state(task, state)
+    return 0.0 if reward_hacking is None else float(reward_hacking["exploit_detected"])
+
+
+@vf.metric
+async def tau2_needs_manual_review(task, state) -> float:
+    reward_hacking = ensure_reward_hacking_state(task, state)
+    return 0.0 if reward_hacking is None else float(
+        reward_hacking["needs_manual_review"]
+    )
+
+
+@vf.metric
+async def tau2_simulator_contract_repaired(task, state) -> float:
+    reward_hacking = ensure_reward_hacking_state(task, state)
+    return 0.0 if reward_hacking is None else float(
+        reward_hacking["simulator_contract_repaired"]
+    )
+
+
 class Tau2TasksetConfig(vf.TasksetConfig):
     domain: str = "telecom"
     user_model: str = DEFAULT_USER_MODEL
@@ -674,6 +909,11 @@ class Tau2TasksetConfig(vf.TasksetConfig):
     max_steps: int = DEFAULT_MAX_STEPS
     max_errors: int = DEFAULT_MAX_ERRORS
     max_turns: int = DEFAULT_MAX_STEPS
+    mutation_file: str | None = None
+    mutation_ids: list[str] | None = None
+    mutation_mode: str = "none"
+    agent_elicitation_prompt: str | None = None
+    agent_elicitation_position: str = "post_policy"
 
 
 class Tau2Taskset(vf.Taskset):
@@ -690,6 +930,11 @@ class Tau2Taskset(vf.Taskset):
         max_steps: int | None = None,
         max_errors: int | None = None,
         max_turns: int | None = None,
+        mutation_file: str | None = None,
+        mutation_ids: list[str] | None = None,
+        mutation_mode: str | None = None,
+        agent_elicitation_prompt: str | None = None,
+        agent_elicitation_position: str | None = None,
         config: Tau2TasksetConfig | None = None,
     ):
         config = Tau2TasksetConfig(
@@ -702,7 +947,29 @@ class Tau2Taskset(vf.Taskset):
             max_steps=max_steps,
             max_errors=max_errors,
             max_turns=max_turns,
+            mutation_file=mutation_file,
+            mutation_ids=mutation_ids,
+            mutation_mode=mutation_mode,
+            agent_elicitation_prompt=agent_elicitation_prompt,
+            agent_elicitation_position=agent_elicitation_position,
         )
+        mutation_specs: list[MutationSpec] | None = None
+        if config.mutation_mode not in {"none", "eval_only"}:
+            raise ValueError(f"Unsupported mutation_mode: {config.mutation_mode!r}")
+        if config.mutation_file is not None:
+            mutation_path = resolve_mutation_path(
+                config.mutation_file,
+                base_dir=Path(__file__).parent,
+            )
+            mutation_specs = load_mutation_specs(
+                mutation_path,
+                domain=config.domain,
+                mutation_ids=config.mutation_ids,
+            )
+            mutation_specs = validate_mutation_specs(
+                mutation_specs,
+                domain=config.domain,
+            )
         resolved_user_args = (
             DEFAULT_LLM_ARGS_USER if config.user_args is None else config.user_args
         )
@@ -727,7 +994,13 @@ class Tau2Taskset(vf.Taskset):
         )
 
         def load_rows():
-            return source(config.domain, max_turns=config.max_turns)
+            return source(
+                config.domain,
+                max_turns=config.max_turns,
+                mutation_specs=mutation_specs,
+                agent_elicitation_prompt=config.agent_elicitation_prompt,
+                agent_elicitation_position=config.agent_elicitation_position,
+            )
 
         super().__init__(
             source=load_rows,
@@ -739,6 +1012,11 @@ class Tau2Taskset(vf.Taskset):
                 tau2_num_steps,
                 tau2_num_assistant_tool_calls,
                 tau2_num_user_tool_calls,
+                tau2_buggy_reward,
+                tau2_oracle_correct,
+                tau2_exploit_detected,
+                tau2_needs_manual_review,
+                tau2_simulator_contract_repaired,
             ],
             toolsets=[toolset],
             user=vf.User(tau2_user, bindings={"session": session_factory}),
@@ -756,6 +1034,11 @@ def load_taskset(
     max_steps: int | None = None,
     max_errors: int | None = None,
     max_turns: int | None = None,
+    mutation_file: str | None = None,
+    mutation_ids: list[str] | None = None,
+    mutation_mode: str | None = None,
+    agent_elicitation_prompt: str | None = None,
+    agent_elicitation_position: str | None = None,
     config: Tau2TasksetConfig | None = None,
 ) -> Tau2Taskset:
     return Tau2Taskset(
@@ -767,6 +1050,11 @@ def load_taskset(
         max_steps=max_steps,
         max_errors=max_errors,
         max_turns=max_turns,
+        mutation_file=mutation_file,
+        mutation_ids=mutation_ids,
+        mutation_mode=mutation_mode,
+        agent_elicitation_prompt=agent_elicitation_prompt,
+        agent_elicitation_position=agent_elicitation_position,
         config=config,
     )
 
@@ -781,6 +1069,11 @@ def load_environment(
     max_steps: int = DEFAULT_MAX_STEPS,
     max_errors: int = DEFAULT_MAX_ERRORS,
     max_turns: int = DEFAULT_MAX_STEPS,
+    mutation_file: str | None = None,
+    mutation_ids: list[str] | None = None,
+    mutation_mode: str = "none",
+    agent_elicitation_prompt: str | None = None,
+    agent_elicitation_position: str = "post_policy",
     config: vf.EnvConfig,
 ) -> vf.Env:
     config = vf.EnvConfig(
@@ -794,6 +1087,11 @@ def load_environment(
             max_steps=max_steps,
             max_errors=max_errors,
             max_turns=max_turns,
+            mutation_file=mutation_file,
+            mutation_ids=mutation_ids,
+            mutation_mode=mutation_mode,
+            agent_elicitation_prompt=agent_elicitation_prompt,
+            agent_elicitation_position=agent_elicitation_position,
         ),
     )
     taskset_config = (
