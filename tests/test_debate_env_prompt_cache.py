@@ -7,12 +7,12 @@ import pytest
 from verifiers.protocols.debate.prompts import DebatePrompts
 from verifiers.protocols.debate.env import DebateEnv
 from verifiers.envs.multi_agent_kernel import (
+    ContentChannels,
     KernelState,
     StaticSchedule,
     TurnSlot,
     apply_action,
 )
-from verifiers.protocols.debate.channels import parse_channels
 from verifiers.types import AssistantMessage, State, UserMessage
 
 
@@ -65,7 +65,6 @@ def _prompts() -> DebatePrompts:
         question={member: _template("{{ task_prompt }}") for member in _MEMBERS},
         fields={},
         think_visibility={},
-        think_tag="thinking",
         prefill={},
         opponent_wrap=None,
         judges={},
@@ -113,7 +112,7 @@ def _state_with_transcript(*actions: tuple[str, str]) -> State:
             member_id,
             content,
             token_count=1,
-            channels=parse_channels(content, "thinking"),
+            channels=ContentChannels(public=content),
         )
         kernel = result.new_state
 
@@ -148,7 +147,7 @@ def _apply(
         member_id,
         content,
         token_count=1,
-        channels=parse_channels(content, "thinking"),
+        channels=ContentChannels(public=content),
     )
     return result.new_state
 
@@ -225,7 +224,7 @@ async def test_debate_prompt_body_cache_renders_only_new_transcript_suffix() -> 
         "debater_a",
         "critique A",
         token_count=1,
-        channels=parse_channels("critique A", "thinking"),
+        channels=ContentChannels(public="critique A"),
     )
     state["_kernel"] = result.new_state
 

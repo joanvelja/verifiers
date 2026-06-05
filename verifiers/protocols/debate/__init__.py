@@ -2,7 +2,7 @@
 
 from .env import DebateEnv, load_environment
 from .fields import FieldSpec
-from .channels import merge_provider_reasoning, parse_channels
+from .channels import reasoning_split_failed, structured_reasoning
 from .parsing import extract_fields
 from .prompts import (
     DebatePrompts,
@@ -21,8 +21,8 @@ __all__ = [
     "build_context",
     "extract_fields",
     "load_environment",
-    "merge_provider_reasoning",
     "normalize_verdict_token",
-    "parse_channels",
+    "reasoning_split_failed",
     "resolve_prompts",
+    "structured_reasoning",
 ]

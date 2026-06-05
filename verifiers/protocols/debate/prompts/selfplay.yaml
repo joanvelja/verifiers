@@ -87,6 +87,33 @@ user:
   judge:
     final: ""
 
+# Strong, self-contained framing for an opponent's turn so each speaker stays
+# unmistakable as its own message block (DebateEnv keeps per-message
+# boundaries; it does not fold adjacent user messages). Without it the bare
+# "[debater_x]" fallback lets the second mover (which sees the opponent before
+# its own first reply) mis-read the opponent's argument as its own and
+# mis-identify ("am I debater_a?").
+#
+# {{ reasoning }} is rendered ONLY for full-visibility viewers (open /
+# visible_to_judge); it is empty under the default public_only air-gap.
+opponent_wrap:
+  debater: |-
+    --- Opponent {{ member_id }} ({{ phase }}) — the text below was written by your opponent, not you ---
+    {{ text }}
+    {%- if reasoning %}
+    --- Opponent {{ member_id }}'s reasoning ---
+    {{ reasoning }}
+    {%- endif %}
+    --- End of opponent {{ member_id }}'s {{ phase }} ---
+  judge: |-
+    --- {{ member_id }} ({{ phase }}) ---
+    {{ text }}
+    {%- if reasoning %}
+    --- {{ member_id }}'s reasoning ---
+    {{ reasoning }}
+    {%- endif %}
+    --- End of {{ member_id }}'s {{ phase }} ---
+
 fields:
   debater_a:
     propose:

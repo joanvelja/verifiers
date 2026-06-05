@@ -1353,8 +1353,11 @@ class ClientConfig(BaseModel):
     ``RendererClient`` default."""
     tool_parser: str | None = None
     reasoning_parser: str | None = None
-    preserve_all_thinking: bool = False
-    preserve_thinking_between_tool_calls: bool = False
+    # NOTE: preserve_all_thinking / preserve_thinking_between_tool_calls are
+    # owned by the renderer config (RendererConfig), the single source of truth
+    # the renderer client reads (it resolves them off ``renderer``, never off
+    # ClientConfig). Intentionally NOT duplicated here — a second copy is a
+    # silent footgun (set-but-never-read).
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)

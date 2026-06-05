@@ -15,8 +15,12 @@ inherited from :class:`MultiAgentEnv`.
 import logging
 from typing import Any, cast
 
-from verifiers.protocols.debate.channels import merge_provider_reasoning, parse_channels
+from verifiers.protocols.debate.channels import (
+    reasoning_split_failed,
+    structured_reasoning,
+)
 from verifiers.protocols.debate.parsing import extract_fields
+from verifiers.errors import ContentParseError
 from verifiers.protocols.debate.prompts import (
     DebatePrompts,
     build_context,
@@ -252,12 +256,18 @@ class DebateEnv(MultiAgentEnv):
                 )
             )
         vis = self.visibility_policy(utt, viewer_id)
-        content = utt.raw_content if vis == "full" else utt.public_channel
+        # Air-gap by omission for public_only viewers (the default): show the
+        # public channel only. For full-visibility viewers (open / the judge
+        # under visible_to_judge), fold the author's reasoning back in as the
+        # author's LABELED content — never as the viewer's own reasoning_content,
+        # which the renderer drops on user-role messages anyway.
+        reasoning = utt.private_channel if vis == "full" else None
         content = self.prompts.wrap_opponent(
             utt.phase,
-            content,
+            utt.public_channel,
             member_id=utt.member_id,
             viewer_id=viewer_id,
+            reasoning=reasoning,
         )
         return UserMessage(content=content)
 
@@ -274,9 +284,54 @@ class DebateEnv(MultiAgentEnv):
     def split_response_channels(
         self, response: Response, member_id: str, slot: TurnSlot
     ) -> tuple[str, ContentChannels]:
-        raw, _ = super().split_response_channels(response, member_id, slot)
-        raw = merge_provider_reasoning(raw, response, self.prompts.think_tag)
-        return raw, parse_channels(raw, self.prompts.think_tag)
+        """Renderer-first channel split.
+
+        The renderer already split the model's CoT into the structured
+        ``reasoning_content`` field at sampling time. We read it verbatim into
+        the private channel and take the visible content as the public channel
+        — no inline-tag fold, no tag-parse. Air-gap is enforced per-viewer in
+        ``build_prompt``: own-turn replay keeps ``reasoning_content``,
+        ``public_only`` cross-agent views omit it, ``open``/``visible_to_judge``
+        fold it back as the author's labeled content.
+
+        Fail-loud split (CONTRACT violation, not a model-quality event): a
+        complete ``<think>...</think>`` block surviving in the visible content
+        WHILE no reasoning_content was extracted means the active renderer did
+        not structurally split reasoning — that would leak private CoT to the
+        opponent/judge, so we raise rather than quarantine. The check is gated
+        on reasoning being absent so a debater that merely quotes ``<think>`` in
+        a public answer (with its real reasoning correctly split out) does not
+        crash the rollout. Debate air-gap requires a reasoning-splitting renderer
+        (qwen35 family); gemma4/olmo3 and inline-only models are out of scope
+        until their parsers populate ``reasoning_content``. An empty visible
+        channel (model emitted no answer) is a model-quality event: logged loud,
+        quarantined by the kernel (zero reward), never a crash.
+        """
+        visible, _ = super().split_response_channels(response, member_id, slot)
+        reasoning = structured_reasoning(response)
+        if reasoning_split_failed(visible, reasoning):
+            raise ContentParseError(
+                f"split_response_channels[{member_id}] slot={slot.slot_id}: a "
+                f"<think>...</think> block survives in the visible channel and no "
+                f"reasoning_content was extracted — the active renderer did not "
+                f"structurally split reasoning (gemma4/olmo3, an inline-only "
+                f"model, or no reasoning parser). Debate air-gap requires a "
+                f"reasoning-splitting renderer (qwen35 family); private CoT would "
+                f"otherwise reach the opponent/judge."
+            )
+        if not visible.strip():
+            _log.warning(
+                "member=%s slot=%s emitted empty visible content (no answer); "
+                "kernel will quarantine this turn (zero reward).",
+                member_id,
+                slot.slot_id,
+            )
+        # public_channel is response.message.content VERBATIM (unstripped) — it
+        # must byte-match the bridge anchor's completion content, so we do NOT
+        # .strip() it the way the base ContentChannels does. extract_fields
+        # tolerates surrounding whitespace; the kernel's empty-check strips
+        # internally for its own test.
+        return visible, ContentChannels(public=visible, private=reasoning)
 
     # -- prompt construction -------------------------------------------------
 
@@ -289,13 +344,21 @@ class DebateEnv(MultiAgentEnv):
         member, the slot-N+1 prompt is equal byte-for-byte to the slot-N
         prompt on its leading messages and only adds a suffix. To achieve
         this, each own-turn in the transcript is rendered as the pair
-        ``[instruction_that_preceded_it, assistant=raw_content]`` -- i.e.
-        we re-render the instruction for that turn's phase/round_index.
-        Opponent turns are rendered as wrapped user messages. The
-        current turn's instruction + optional assistant-prefill sit at
-        the tail. No contiguous-user-message consolidation (that would
-        split one message into two across boundaries that shift when
-        history grows).
+        ``[instruction_that_preceded_it, assistant(public + reasoning_content)]``
+        -- i.e. we re-render the instruction for that turn's phase/round_index.
+        Opponent turns are rendered as wrapped user messages. The current
+        turn's instruction + optional assistant-prefill sit at the tail.
+
+        The base class folds consecutive user messages (question + opponent +
+        instruction) into one block before the renderer — required so the
+        continuation tail stays a SINGLE user message and the renderer-client
+        bridge hits (``_is_valid_incremental_tail`` rejects a [user, user]
+        tail). Opponent-vs-self provenance is NOT carried by message
+        boundaries (they are folded away); it is carried inside the folded
+        content by the pack's ``opponent_wrap`` labeling, which frames each
+        opponent block unmistakably ("written by your opponent, not you").
+        That labeling is what fixes the second-mover-confusion, not the
+        message structure.
         """
         kernel_state: KernelState = state["_kernel"]
         question = question_from_state(state)
@@ -453,22 +516,26 @@ class DebateEnv(MultiAgentEnv):
         question: str,
         state: State,
     ) -> list[Message]:
-        """Render one own-turn utterance as ``[instruction, assistant=raw]``.
+        """Render one own-turn utterance as ``[instruction, assistant]``.
 
         Re-renders the instruction that preceded ``utt`` using the past
-        turn's own (phase, round_index), then emits the verbatim
-        ``raw_content`` as the assistant message. ``round_index`` is the
-        positional own-turn counter (N-th own commit = round N),
-        independent of slot_id so sparse / semantic slot_ids don't
-        produce nonsensical round labels.
+        turn's own (phase, round_index), then emits the assistant message as
+        ``content=public_channel`` + ``reasoning_content=private_channel``
+        (the renderer's verbatim structured reasoning). This pair is
+        byte-identical to what ``parse_response_message`` stores on the
+        renderer-client bridge anchor, so the bridge hits and reuses the
+        sampled tokens verbatim. With ``preserve_all_thinking=True`` (the
+        debate renderer-config requirement), the rare full-re-render path
+        retains own past reasoning too, so bridge-hit and bridge-miss render
+        identically — no determinism split. ``round_index`` is the positional
+        own-turn counter (N-th own commit = round N), independent of slot_id.
 
-        Quarantined own-turns are skipped entirely. There's no useful
-        assistant content to anchor on (parse failure or empty-public
-        commit), and replaying a lone ``<thinking>`` block as the
-        previous assistant message confuses reasoning models into
-        thinking they're still in that earlier phase. KV-cache
-        monotonic-extension is unaffected — a quarantined commit
-        added no usable prefix tokens to invalidate.
+        Quarantined own-turns are skipped entirely: there's no useful
+        assistant content to anchor on (parse failure or empty-public commit),
+        and replaying a lone reasoning block as the previous assistant message
+        confuses reasoning models into thinking they're still in that earlier
+        phase. KV-cache monotonic-extension is unaffected — a quarantined
+        commit added no usable prefix tokens to invalidate.
         """
         if utt.parse_error is not None:
             return []
@@ -479,7 +546,12 @@ class DebateEnv(MultiAgentEnv):
         past_instr = self.prompts.render_instruction(member_id, utt.phase, past_ctx)
         if past_instr:
             msgs.append(UserMessage(content=past_instr))
-        msgs.append(AssistantMessage(content=utt.raw_content))
+        msgs.append(
+            AssistantMessage(
+                content=utt.public_channel,
+                reasoning_content=utt.private_channel,
+            )
+        )
         return msgs
 
     def _render_current_suffix(
