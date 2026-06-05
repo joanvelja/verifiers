@@ -170,7 +170,14 @@ class MultiAgentEnv(vf.Environment):
         and promotes to typed. ``fold_consecutive_user_messages`` then
         runs typed-in → typed-out, preserving types through to the
         model-request and the renderer bridge. Folding collapses adjacent
-        user runs so chat-template rendering stays in-distribution.
+        user runs so chat-template rendering stays in-distribution AND the
+        renderer-client bridge stays valid: ``_is_valid_incremental_tail``
+        only accepts a SINGLE trailing user message, so an unfolded
+        [user, user] continuation tail (opponent + instruction) would miss
+        the bridge on every turn and force a full re-render. Speaker
+        provenance is carried inside the folded content by per-protocol
+        attribution (DebateEnv: ``opponent_wrap`` labeling), not by message
+        boundaries.
         """
         prompt = await self.build_prompt(state, agent, slot)
         prompt = maybe_normalize_messages(prompt, field_name="multi_agent_prompt")

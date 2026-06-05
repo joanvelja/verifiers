@@ -79,7 +79,6 @@ class DebatePrompts:
     question: dict[str, jinja2.Template]
     fields: dict[str, dict[str, dict[str, FieldSpec]]]
     think_visibility: dict[str, str]
-    think_tag: str
     prefill: dict[str, dict[str, jinja2.Template]]
     opponent_wrap: dict[str, jinja2.Template] | None
     judges: dict[str, JudgeTemplate]
@@ -176,16 +175,17 @@ class DebatePrompts:
         *,
         member_id: str,
         viewer_id: str,
+        reasoning: str | None = None,
     ) -> str:
         """Wrap opponent utterance text with speaker attribution.
 
-        Template context: ``text``, ``phase``, ``member_id``,
-        ``viewer_id``. A pack's ``opponent_wrap`` template SHOULD
-        reference ``member_id`` so judges and peer debaters can attribute
-        each block to the correct speaker. Without attribution, the judge
-        has to infer speaker identity from transcript order — a latent
-        ambiguity that breaks whenever argument lengths are asymmetric
-        or the transcript gets reordered.
+        Template context: ``text``, ``phase``, ``member_id``, ``viewer_id``,
+        ``reasoning``. A pack's ``opponent_wrap`` template SHOULD reference
+        ``member_id`` so judges and peer debaters can attribute each block to
+        the correct speaker. Without attribution, the judge has to infer
+        speaker identity from transcript order — a latent ambiguity that breaks
+        whenever argument lengths are asymmetric or the transcript gets
+        reordered.
 
         ``viewer_id`` is threaded through so packs can switch framing on
         who is *reading* the transcript. When the viewer is a judge and
@@ -194,13 +194,27 @@ class DebatePrompts:
         Packs that don't reference ``viewer_id`` in their Jinja body are
         unaffected.
 
+        ``reasoning`` is the author's structured reasoning, passed ONLY for
+        full-visibility viewers (``open`` / the judge under
+        ``visible_to_judge``) — see ``DebateEnv._render_opponent_message``.
+        It is rendered as the author's LABELED content (the renderer drops
+        ``reasoning_content`` on user-role messages, so a structured field
+        would silently vanish for these modes; folding it into labeled content
+        is the required primitive). For ``public_only`` viewers ``reasoning``
+        is ``None`` — omission IS the air-gap. Templates gate it with
+        ``{% if reasoning %}``; the empty-string default keeps Jinja from
+        rendering ``None``.
+
         When no ``opponent_wrap`` template is defined, falls back to a
-        minimal ``[member_id] content`` prefix. Bare passthrough would
-        leave the attribution gap unfixed for packs that omit a wrap
-        template.
+        minimal ``[member_id] content`` prefix (plus a labeled reasoning line
+        when reasoning is supplied). Bare passthrough would leave the
+        attribution gap unfixed for packs that omit a wrap template.
         """
         if self.opponent_wrap is None:
-            return f"[{member_id}] {content}"
+            wrapped = f"[{member_id}] {content}"
+            if reasoning:
+                wrapped += f"\n[{member_id} reasoning] {reasoning}"
+            return wrapped
         if viewer_id == "judge" and "judge" in self.opponent_wrap:
             key = "judge"
         elif "debater" in self.opponent_wrap:
@@ -212,6 +226,7 @@ class DebatePrompts:
             phase=phase,
             member_id=member_id,
             viewer_id=viewer_id,
+            reasoning=reasoning or "",
         )
 
     def get_field_specs(self, role: str, phase: str) -> dict[str, FieldSpec] | None:
@@ -224,11 +239,20 @@ class DebatePrompts:
     # -- Private helpers ----------------------------------------------------
 
     def _think_instruction(self, role: str) -> str | None:
+        """Visibility framing for the role's reasoning, or None.
+
+        Renderer-first: the renderer owns the thinking tag (qwen35 emits
+        ``<think>`` natively under ``enable_thinking``). The pack must NOT
+        declare a competing content-level tag — doing so produced the
+        ``<thinking>`` vs ``<think>`` mismatch that defeated the renderer's
+        history-strip. This conveys only the visibility norm (whether the
+        reasoning is private / shown to the judge / open); the env enforces
+        the actual air-gap by message construction regardless.
+        """
         vis = self.think_visibility.get(role, "disabled")
         if vis == "disabled":
             return None
-        desc = _THINK_DESCRIPTIONS.get(vis, "")
-        return f"Use <{self.think_tag}>...</{self.think_tag}> tags for your reasoning. {desc}"
+        return _THINK_DESCRIPTIONS.get(vis) or None
 
     def _field_instructions(self, role: str, trigger: str) -> str | None:
         role_fields = self.fields.get(role)
@@ -301,7 +325,7 @@ def resolve_prompts(ref: str) -> DebatePrompts:
     system = _compile_flat_templates(d.get("system", {}))
     user = _compile_templates(d.get("user", {}))
     question = _compile_flat_templates(d.get("question", {}))
-    think_visibility, think_tag = _normalize_think(d.get("think", {}))
+    think_visibility = _normalize_think(d.get("think", {}))
     prefill = _compile_templates(d.get("prefill", {}))
     fields = _parse_fields(d.get("fields", {}))
     judges = compile_judge_blocks(d)
@@ -317,7 +341,6 @@ def resolve_prompts(ref: str) -> DebatePrompts:
         question=question,
         fields=fields,
         think_visibility=think_visibility,
-        think_tag=think_tag,
         prefill=prefill,
         opponent_wrap=opponent_wrap,
         judges=judges,
@@ -426,7 +449,18 @@ def _validate(d: dict) -> None:
         if isinstance(val, str):
             if val not in _THINK_VISIBILITY_LEVELS:
                 raise ValueError(f"think.{role}: unknown visibility '{val}'")
-        elif val is not False and not isinstance(val, dict):
+        elif isinstance(val, dict):
+            # Renderer-first: there is no content-level think tag any more (the
+            # renderer owns it). A legacy `tag:` key is meaningless — fail loud
+            # rather than silently dropping it, so a migrating pack gets signal.
+            unknown = set(val) - {"visibility"}
+            if unknown:
+                raise ValueError(
+                    f"think.{role}: unknown key(s) {sorted(unknown)} "
+                    "(only 'visibility' is supported; the renderer owns the "
+                    "think tag, so a content-level 'tag' is no longer read)"
+                )
+        elif val is not False:
             raise ValueError(
                 f"think.{role}: expected false, str, or dict, got {type(val).__name__}"
             )
@@ -486,18 +520,18 @@ def _compile_flat_templates(block: dict[str, str]) -> dict[str, jinja2.Template]
     return {role: _jinja_env.from_string(tmpl_str) for role, tmpl_str in block.items()}
 
 
-def _normalize_think(block: dict) -> tuple[dict[str, str], str]:
-    """Parse think block into (role → visibility, tag).
+def _normalize_think(block: dict) -> dict[str, str]:
+    """Parse think block into a flat dict mapping role → visibility.
 
-    Returns a flat dict mapping role to visibility string,
-    plus the think tag (uniform across roles, default "thinking").
+    Renderer-first: there is no content-level think tag any more (the renderer
+    owns it). ``visibility`` is the only key a pack still controls; a legacy
+    ``tag:`` key on a role dict is rejected loudly upstream by ``_validate``
+    (which runs first), so only ``visibility`` ever reaches here.
     """
     visibility: dict[str, str] = {}
-    tag = "thinking"
 
     for role, val in block.items():
         if isinstance(val, dict):
-            tag = val.get("tag", tag)
             vis = val.get("visibility", "disabled")
         elif val is False:
             vis = "disabled"
@@ -511,7 +545,7 @@ def _normalize_think(block: dict) -> tuple[dict[str, str], str]:
             raise ValueError(f"think.{role}: unknown visibility '{vis}'")
         visibility[role] = vis
 
-    return visibility, tag
+    return visibility
 
 
 def _parse_fields(block: dict) -> dict[str, dict[str, dict[str, FieldSpec]]]:
