@@ -71,6 +71,7 @@ from .utils.sandbox_program_utils import (
     python_program_sandbox,
     run_sandbox_python_program,
 )
+from .utils.logging_utils import log_rollout_finish, log_rollout_start
 from .utils.prompt_utils import (
     SystemPrompt,
     SystemPromptStrategy,
@@ -105,6 +106,7 @@ class HarnessConfig(LifecycleConfig):
     )
     program: ProgramConfig = ProgramConfig()
     model: ModelConfig = ModelConfig()
+    version: str | None = None
     system_prompt: SystemPrompt = None
     system_prompt_strategy: SystemPromptStrategy = "HT"
     sandbox: SandboxConfig | None = None
@@ -188,7 +190,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             ):
                 raise TypeError("harness_id must be a string.")
             self.harness_id = resolved_harness_id or type(self).__name__
-            self.program_config = self.config.program.resolve()
+            self.program_config = self.load_program_config(self.config)
             system_prompt_value = self.load_system_prompt(self.config)
             self.system_prompt = normalize_system_prompt(
                 system_prompt_value, field_name="harness.system_prompt"
@@ -219,6 +221,9 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
     def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt
 
+    def load_program_config(self, config: ConfigT) -> ProgramConfig:
+        return config.program.resolve()
+
     def load_sandbox(self, config: SandboxConfig | None) -> SandboxConfig | None:
         sandbox = self.program_config.sandbox
         if sandbox is None or sandbox is False:
@@ -241,6 +246,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
 
     async def run(self, task: Task, state: State | None = None) -> State:
         state = await self.init_state(task) if state is None else state
+        log_rollout_start(state)
         timing_recorded = False
         completed = False
         try:
@@ -272,6 +278,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     state.strip_runtime_handles()
             elif completed:
                 state.assert_serializable()
+            log_rollout_finish(state)
         return state
 
     def record_error(self, state: State, error: Error) -> None:
@@ -310,6 +317,11 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         if not isinstance(trajectory, list):
             raise TypeError("state.trajectory must be a list.")
         return float(len(trajectory))
+
+    @vf.stop
+    async def max_turns_reached(self, state: State) -> bool:
+        max_turns = state.get_max_turns(self.config.max_turns)
+        return max_turns > 0 and self.runtime.visible_model_requests(state) >= max_turns
 
     async def setup_state(self, task: Task, state: State) -> State:
         await self.setup_runtime_state(task, state)
@@ -543,9 +555,6 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             )
             sync_completion()
             if await self.runtime.is_completed(task, state):
-                return state
-            if max_turns > 0 and turn >= max_turns:
-                state._set_stop_condition("max_turns_reached", overwrite=True)
                 return state
         return state
 

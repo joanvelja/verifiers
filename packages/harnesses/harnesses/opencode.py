@@ -5,11 +5,9 @@ from pathlib import PurePosixPath
 import verifiers as vf
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
-OPENCODE_DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
-OPENCODE_DEFAULT_RELEASE_VERSION = "1.1.63-rl2"
-OPENCODE_DEFAULT_RELEASE_SHA256 = (
-    "47f4102796da50769e27d2c9ea6a9cf7941f76898390cb497278cab39c4b6ed4"
-)
+from .utils import split_versioned_agent_spec
+
+OPENCODE_DEFAULT_VERSION = "PrimeIntellect-ai/opencode@1.1.63-rl2"
 OPENCODE_DEFAULT_AGENT_WORKDIR = "/app"
 OPENCODE_DEFAULT_INSTRUCTION_PATH = "/opencode/instruction.txt"
 OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH = "/opencode/system.txt"
@@ -52,13 +50,10 @@ class OpenCodeProgramConfig(vf.ProgramConfig):
     disabled_tools: list[str] = OPENCODE_DEFAULT_DISABLED_TOOLS
     allow_git: bool = False
     disable_compaction: bool = True
-    release_repo: str = OPENCODE_DEFAULT_RELEASE_REPO
-    release_version: str = OPENCODE_DEFAULT_RELEASE_VERSION
-    release_sha256: str = OPENCODE_DEFAULT_RELEASE_SHA256
     install_ripgrep: bool = True
     provider_timeout_ms: int = 3_600_000
 
-    def resolve(self) -> vf.ProgramConfig:
+    def resolve(self, version: str = OPENCODE_DEFAULT_VERSION) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
             self.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
             self.system_prompt_path: {
@@ -74,23 +69,29 @@ class OpenCodeProgramConfig(vf.ProgramConfig):
                 }
             }
         )
-        rg_install = (
+        ripgrep_install = (
             "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
             if self.install_ripgrep
             else ""
         )
-        sha256_check = (
-            f'echo "{self.release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
-        )
+        repo, parsed_version = split_versioned_agent_spec(version)
+        path = "releases/latest/download"
+        if parsed_version and parsed_version != "latest":
+            tag = (
+                parsed_version
+                if parsed_version.startswith("v")
+                else f"v{parsed_version}"
+            )
+            path = f"releases/download/{tag}"
         # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
         # mismatches that fail fresh-sandbox apt-get calls mid-rollout.
         setup = f"""\
 set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar ca-certificates > /dev/null 2>&1
-{rg_install}
+{ripgrep_install}
 
-OPENCODE_RELEASE_REPO={shlex.quote(self.release_repo)}
-OPENCODE_RELEASE_VERSION={shlex.quote(self.release_version)}
+OPENCODE_RELEASE_REPO={shlex.quote(repo)}
+OPENCODE_RELEASE_PATH={shlex.quote(path)}
 
 case "$(uname -m)" in
   x86_64) OPENCODE_ARCH=x64 ;;
@@ -99,15 +100,13 @@ case "$(uname -m)" in
 esac
 
 OPENCODE_ASSET="opencode-linux-$OPENCODE_ARCH.tar.gz"
-OPENCODE_RELEASE_TAG="${{OPENCODE_RELEASE_VERSION#v}}"
-OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/releases/download/v$OPENCODE_RELEASE_TAG/$OPENCODE_ASSET"
+OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/$OPENCODE_RELEASE_PATH/$OPENCODE_ASSET"
 
 mkdir -p "$HOME/.opencode/bin"
 if [ -x "$HOME/.opencode/bin/opencode" ]; then
   echo "OpenCode already installed, skipping download"
 else
   curl -fsSL "$OPENCODE_RELEASE_URL" -o /tmp/opencode.tar.gz
-  {sha256_check}
   tar -xzf /tmp/opencode.tar.gz -C /tmp
   install -m 755 /tmp/opencode "$HOME/.opencode/bin/opencode"
   rm -f /tmp/opencode.tar.gz /tmp/opencode
@@ -201,12 +200,16 @@ class OpenCodeConfig(vf.HarnessConfig):
     system_prompt: vf.PromptInput | vf.SystemPromptConfig | None = (
         OPENCODE_DEFAULT_SYSTEM_PROMPT
     )
+    version: str = OPENCODE_DEFAULT_VERSION
     program: OpenCodeProgramConfig = OpenCodeProgramConfig()
     max_turns: int = 4
 
 
 class OpenCode(vf.Harness[OpenCodeConfig]):
     config: OpenCodeConfig
+
+    def load_program_config(self, config: OpenCodeConfig) -> vf.ProgramConfig:
+        return config.program.resolve(version=config.version)
 
 
 def load_harness(config: OpenCodeConfig) -> OpenCode:

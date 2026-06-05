@@ -25,10 +25,10 @@ from harnesses import (
     Terminus2Config,
     Terminus2ProgramConfig,
 )
-from harnesses.pi import PI_DEFAULT_PACKAGE
+from harnesses.pi import PI_DEFAULT_VERSION
 from harnesses.terminus_2 import (
     TERMINUS_2_DEFAULT_API_BASE_URL,
-    TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
+    TERMINUS_2_DEFAULT_VERSION,
     TERMINUS_2_DEFAULT_MODEL_NAME,
     Terminus2,
 )
@@ -268,7 +268,7 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
             max_turns=2,
         )
     )
-    program = cast(dict[str, object], harness.config.program.data())
+    program = cast(dict[str, object], harness.program_config.data())
     command = cast(list[object], program["command"])
     mcp_setup = cast(dict[str, object], program["channels"])["mcp"]
     setup = cast(str, program["setup"])
@@ -279,9 +279,46 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
     assert harness.config.max_turns == 2
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
+    assert "OPENCODE_RELEASE_REPO=PrimeIntellect-ai/opencode" in setup
+    assert "OPENCODE_RELEASE_PATH=releases/download/v1.1.63-rl2" in setup
     assert "/workspace" in cast(str, command[2])
     assert '"webfetch": false' in cast(str, mcp_setup)
     assert "/opencode/system.txt" in cast(dict[str, object], program["files"])
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["PrimeIntellect-ai/opencode@latest", "  PrimeIntellect-ai/opencode  "],
+)
+def test_opencode_latest_version_uses_latest_download_url(
+    version: str,
+) -> None:
+    harness = OpenCode(
+        config=OpenCodeConfig(
+            version=version,
+            program=OpenCodeProgramConfig(
+                install_ripgrep=False,
+            ),
+        )
+    )
+    program = cast(dict[str, object], harness.program_config.data())
+    setup = cast(str, program["setup"])
+
+    assert "OPENCODE_RELEASE_REPO=PrimeIntellect-ai/opencode" in setup
+    assert "OPENCODE_RELEASE_PATH=releases/latest/download" in setup
+
+
+def test_opencode_custom_version_uses_versioned_release() -> None:
+    harness = OpenCode(
+        config=OpenCodeConfig(
+            version="Example/open-code@v2.0.0",
+        )
+    )
+    program = cast(dict[str, object], harness.program_config.data())
+    setup = cast(str, program["setup"])
+
+    assert "OPENCODE_RELEASE_REPO=Example/open-code" in setup
+    assert "OPENCODE_RELEASE_PATH=releases/download/v2.0.0" in setup
 
 
 @pytest.mark.parametrize(
@@ -303,7 +340,7 @@ def test_packaged_command_harnesses_defer_partial_program_overrides(
         "args": ["--caller"],
     }
     harness = harness_cls(config=config_cls(program=override))
-    program = cast(dict[str, object], harness.config.program.data())
+    program = cast(dict[str, object], harness.program_config.data())
     env = cast(dict[str, object], program["env"])
     setup = cast(list[object], program["setup"])
     args = cast(list[object], program["args"])
@@ -327,7 +364,7 @@ def test_packaged_command_harness_config_program_patch_precedence() -> None:
             program=MiniSWEAgentProgramConfig(env={"OPENAI_MODEL": "caller-model"})
         )
     )
-    program = cast(dict[str, object], harness.config.program.data())
+    program = cast(dict[str, object], harness.program_config.data())
     env = cast(dict[str, object], program["env"])
 
     assert env["OPENAI_MODEL"] == "caller-model"
@@ -349,16 +386,16 @@ def test_packaged_command_harness_config_program_rejects_owned_keys(
 
 def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     harness = Pi()
-    program = cast(dict[str, object], harness.config.program.data())
+    program = cast(dict[str, object], harness.program_config.data())
     setup = cast(str, program["setup"])
     channels = cast(dict[str, object], program["channels"])
     mcp_setup = cast(str, channels["mcp"])
 
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
-    assert harness.config.program.package == PI_DEFAULT_PACKAGE
-    assert PI_DEFAULT_PACKAGE == "@earendil-works/pi-coding-agent"
-    assert f"npm install -g --ignore-scripts {PI_DEFAULT_PACKAGE}" in setup
+    assert harness.config.version == PI_DEFAULT_VERSION
+    assert PI_DEFAULT_VERSION == "@earendil-works/pi-coding-agent@latest"
+    assert f"npm install -g --ignore-scripts {PI_DEFAULT_VERSION}" in setup
     assert "mariozechner" not in setup
     assert '"baseUrl": "${OPENAI_BASE_URL}"' in mcp_setup
     assert '"api": "openai-completions"' in mcp_setup
@@ -366,6 +403,14 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     assert '"id": "model"' in mcp_setup
     assert '"name": "${OPENAI_MODEL}"' in mcp_setup
     assert f'"command": "{SANDBOX_PYTHON}"' in mcp_setup
+
+
+def test_pi_harness_preserves_scoped_npm_versions() -> None:
+    harness = Pi(config=PiConfig(version="@anthropic-ai/claude-code@1.2.3"))
+    program = cast(dict[str, object], harness.program_config.data())
+    setup = cast(str, program["setup"])
+
+    assert "npm install -g --ignore-scripts @anthropic-ai/claude-code@1.2.3" in setup
 
 
 def test_terminus_2_harness_builds_sandbox_program() -> None:
@@ -397,7 +442,7 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
 
     run_script = cast(str, command[2])
     assert "TERMINUS_2_WORKDIR=/workspace" in run_script
-    assert f"--with {TERMINUS_2_DEFAULT_HARBOR_PACKAGE}" in run_script
+    assert f"--with {TERMINUS_2_DEFAULT_VERSION}" in run_script
     assert "git+https://github.com" not in run_script
     assert "max_turns=7" in run_script
 

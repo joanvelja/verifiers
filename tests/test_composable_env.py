@@ -17,6 +17,12 @@ from verifiers.envs.experimental.composable import (
     TaskSet,
     discover_sibling_dir,
 )
+from verifiers.envs.experimental.composable.harnesses.mini_swe_agent import (
+    build_mini_swe_agent_install_script,
+)
+from verifiers.envs.experimental.composable.harnesses.opencode import (
+    build_install_script as build_opencode_install_script,
+)
 
 
 # ── Mock Rubrics ──────────────────────────────────────────────────────
@@ -185,6 +191,22 @@ def test_taskset_repr():
     ts = MockTaskSet(dataset=_make_dataset(), name="mytest")
     assert "mytest" in repr(ts)
     assert "3" in repr(ts)
+
+
+def test_composable_mini_swe_agent_install_script_uses_pip_requirement():
+    setup = build_mini_swe_agent_install_script()
+
+    assert "mini-swe-agent==2.2.8" in setup
+    assert "files.pythonhosted.org" not in setup
+
+
+def test_composable_opencode_install_script_owns_release_download():
+    setup = build_opencode_install_script(
+        install_ripgrep=False,
+    )
+
+    assert "PrimeIntellect-ai/opencode/releases/download/v1.1.63-rl2" in setup
+    assert "tar -xzf /tmp/opencode.tar.gz" in setup
 
 
 @pytest.mark.asyncio

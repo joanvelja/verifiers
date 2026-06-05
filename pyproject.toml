@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
@@ -10,7 +10,7 @@ name = "verifiers"
 authors = [
     {name = "William Brown", email = "williambrown97@gmail.com"},
 ]
-dynamic = ["version"]  # load from verifiers/__init__.py
+dynamic = ["version"]  # derived from git tags via hatch-vcs
 description = "Verifiers: Environments for LLM Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
@@ -93,14 +93,14 @@ ta = [
     "textarena",
 ]
 tasksets = [
-    "tasksets[openenv,openreward,ta]>=0.1.1",
+    "tasksets[openenv,openreward,ta]>=0.1.5",
 ]
 harnesses = [
-    "harnesses>=0.1.1",
+    "harnesses>=0.1.2",
 ]
 packages = [
-    "harnesses>=0.1.1",
-    "tasksets[openenv,openreward,ta]>=0.1.1",
+    "harnesses>=0.1.2",
+    "tasksets[openenv,openreward,ta]>=0.1.5",
 ]
 browser = [
     "stagehand>=3.0.0",
@@ -108,14 +108,14 @@ browser = [
     "python-dotenv>=1.0.0",
 ]
 openenv = [
-    "tasksets[openenv]>=0.1.1",
+    "tasksets[openenv]>=0.1.5",
 ]
 openreward = [
-    "tasksets[openreward]>=0.1.1",
+    "tasksets[openreward]>=0.1.5",
 ]
 nemogym = [
-    "harnesses[nemogym]>=0.1.1",
-    "tasksets[nemogym]>=0.1.1",
+    "harnesses[nemogym]>=0.1.2",
+    "tasksets[nemogym]>=0.1.5",
 ]
 renderers = [
     "renderers>=0.1.8.dev28",
@@ -224,7 +224,20 @@ vf-vllm = "verifiers.scripts.vllm:main"
 
 # hatchling configuration
 [tool.hatch.version]
-path = "verifiers/__init__.py"
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
+git_describe_command = [
+    "git",
+    "describe",
+    "--tags",
+    "--long",
+    "--match",
+    "v[0-9]*.[0-9]*.[0-9]*",
+    "--exclude",
+    "*dev*",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [
