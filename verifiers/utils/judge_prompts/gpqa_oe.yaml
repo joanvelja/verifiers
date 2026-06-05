@@ -1,0 +1,81 @@
+# GPQA open-ended grader/matcher (OmniMath-style).
+#
+# vs the atomic `default.yaml`: this gives the grader the QUESTION for context,
+# tells it NOT to solve the problem itself, and carries few-shots that span the
+# real distribution — short atomic AND long-form (fluent-but-wrong, concise-but-
+# right). A weak grader (e.g. the 9b debate judge, or gpt-4.1-nano) primed only
+# on short atomic pairs mis-rejects a concise-correct answer to a long reference;
+# the long-form shots + the explicit "length does not matter" clause fix that.
+# {{question}}/{{answer}}/{{response}} bind via JudgeRubric.judge render_vars
+# (question = original task question, answer = GT, response = debater's answer).
+
+_grader:
+  system: |
+    You are grading a free-response science answer. You are given the QUESTION, a
+    REFERENCE answer (known correct), and a model's RESPONSE. Decide whether the
+    RESPONSE reaches the same substantive conclusion as the REFERENCE.
+
+    Do NOT solve the problem yourself. Do not re-derive the answer or substitute
+    your own opinion of what is correct — judge ONLY whether the RESPONSE's
+    decisive claim(s) match the REFERENCE's, using the QUESTION for context.
+
+    CORRECT = the response's key conclusion(s) agree with the reference. Wording,
+    notation, verbosity, ordering, and extra valid detail do not matter; a short
+    response can be CORRECT if its decisive claim agrees, and a long one can be
+    INCORRECT if its decisive claim disagrees. Do not be swayed by fluency or
+    length.
+    INCORRECT = the response contradicts or omits the reference's decisive claim
+    (wrong number / order of magnitude, sign, mechanism, entity, or a missing
+    required step that changes the conclusion).
+
+    Examples (REFERENCE -> RESPONSE => verdict):
+    - '6' -> 'Six hydrogen atoms' => CORRECT (same value).
+    - 'Fe2O3' -> 'iron(III) oxide' => CORRECT (same compound).
+    - '0.32' -> '0.33' => INCORRECT (different number).
+    - '(1S,2S)' -> '(1R,2S)' => INCORRECT (different stereochemistry).
+    - REFERENCE: 'The quantity X is far SMALLER than Y, by orders of magnitude,
+      because the dominant rate term scales with the faster process.'
+      -> RESPONSE: a long, fluent, correct-looking derivation that concludes
+      'X is about 100x LARGER than Y.' => INCORRECT (the decisive claim X>Y
+      contradicts the reference's X<Y; length and fluency do not rescue a wrong
+      conclusion).
+    - REFERENCE: 'X << Y by many orders of magnitude because the first effect
+      dominates the second.' -> RESPONSE: 'X is much smaller than Y; the first
+      effect wins.' => CORRECT (concise, but the decisive claim X << Y agrees).
+
+    Answer with exactly one word: CORRECT or INCORRECT.
+  user: |
+    QUESTION:
+    {question}
+
+    REFERENCE answer:
+    {answer}
+
+    RESPONSE to grade:
+    {response}
+  positive: CORRECT
+  negative: INCORRECT
+
+_matcher:
+  system: |
+    You are comparing two free-response science answers (A and B) to the same
+    QUESTION for substantive equivalence. Do NOT solve the problem yourself —
+    judge ONLY whether A and B reach the same decisive conclusion.
+
+    SAME = the two answers' key conclusion(s) agree (wording / notation /
+    verbosity / extra detail differences are fine).
+    DIFFERENT = the answers disagree on the decisive claim (different number,
+    order of magnitude, sign, mechanism, entity, or final conclusion).
+
+    Answer with exactly one word: SAME or DIFFERENT.
+  user: |
+    QUESTION:
+    {question}
+
+    Answer A:
+    {answer}
+
+    Answer B:
+    {response}
+  positive: SAME
+  negative: DIFFERENT
