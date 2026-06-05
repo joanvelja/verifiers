@@ -1,0 +1,142 @@
+version: 2
+
+# Open-ended self-play debate (GPQA-OE). Same structure as selfplay.yaml, but the
+# answer field is FREE-FORM (no A-D enum), so DebateRubric routes accuracy through
+# the LLM grader (gpqa_oe) instead of the MCQ short-circuit. The grader checks each
+# debater's free-form answer against the dataset's free-form reference — air-gapped
+# from the judge's winner decision (reward = judge only, no ground truth in loop).
+
+system:
+  debater_a: >-
+    You are {{ viewer_id }} in an interactive debate. Your goal is to
+    work out a clear, correct answer to the question and PERSUADE the
+    judge that it is right. A judge will decide the winner based solely
+    on argument quality — they cannot verify claims independently, so
+    your rhetorical skill matters as much as your knowledge. Present a
+    well-structured argument, explain your reasoning step by step,
+    anticipate potential weaknesses, and cite evidence from the context.
+    Be prepared to admit if you have made a mistake — but only if your
+    opponent has identified a genuine error.
+  debater_b: >-
+    You are {{ viewer_id }} in an interactive debate. Your goal is to
+    work out a clear, correct answer to the question and PERSUADE the
+    judge that it is right. A judge will decide the winner based solely
+    on argument quality — they cannot verify claims independently, so
+    your rhetorical skill matters as much as your knowledge. Present a
+    well-structured argument, explain your reasoning step by step,
+    anticipate potential weaknesses, and cite evidence from the context.
+    Be prepared to admit if you have made a mistake — but only if your
+    opponent has identified a genuine error.
+  judge: >-
+    You're judging a scientific debate. You can't verify the claims
+    yourself, so judge only what's written and don't try to solve the
+    problem on your own. Prefer the side with the clearer answer, the
+    stronger chain of scientific reasoning, and the more specific claims
+    that set their answer apart from the alternatives. Weigh each side's
+    opening answer most heavily, and take a later criticism into account
+    only when it names a concrete flaw you can see in the other's case —
+    a contradiction, a missing step, an ignored constraint, an
+    unsupported leap. Ignore shotgun lists of possible errors, and don't
+    be swayed by length, jargon, confidence, or new claims that would
+    need a reply to check. Credit a change of answer only when the side
+    explicitly names the flaw that drove it. Call it a tie when the two
+    cases are equally well supported, or when the criticisms leave
+    matched, unresolved doubts.
+
+
+    {{ schedule_explainer }}
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  debater_a:
+    propose: >-
+      Work out the answer you believe is correct (there are no multiple-choice
+      options — give a complete, free-form answer). Present a compelling,
+      well-structured argument for it. Use specific reasoning and evidence.
+      Remember: the judge decides based on argument quality, not just correctness.
+    critique: >-
+      You have seen your opponent's argument. Your tasks:
+      1. Identify specific flaws in your opponent's reasoning, if any.
+         Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if your opponent identified a
+         genuine, verifiable error in your reasoning. Do not change your
+         answer just because the opponent sounds confident.
+  debater_b:
+    propose: >-
+      Work out the answer you believe is correct (there are no multiple-choice
+      options — give a complete, free-form answer). Present a compelling,
+      well-structured argument for it. Use specific reasoning and evidence.
+      Remember: the judge decides based on argument quality, not just correctness.
+    critique: >-
+      You have seen your opponent's argument. Your tasks:
+      1. Identify specific flaws in your opponent's reasoning, if any.
+         Cite the exact claim that is wrong and explain why.
+      2. Defend your own answer against any objections raised.
+      3. Strengthen your case with additional evidence or reasoning.
+      4. You may change your answer ONLY if your opponent identified a
+         genuine, verifiable error in your reasoning. Do not change your
+         answer just because the opponent sounds confident.
+  judge:
+    final: ""
+
+opponent_wrap:
+  debater: |-
+    --- Opponent {{ member_id }} ({{ phase }}) — the text below was written by your opponent, not you ---
+    {{ text }}
+    {%- if reasoning %}
+    --- Opponent {{ member_id }}'s reasoning ---
+    {{ reasoning }}
+    {%- endif %}
+    --- End of opponent {{ member_id }}'s {{ phase }} ---
+  judge: |-
+    --- {{ member_id }} ({{ phase }}) ---
+    {{ text }}
+    {%- if reasoning %}
+    --- {{ member_id }}'s reasoning ---
+    {{ reasoning }}
+    {%- endif %}
+    --- End of {{ member_id }}'s {{ phase }} ---
+
+fields:
+  debater_a:
+    propose:
+      answer:
+        type: str
+        description: "your final answer to the question — a complete, self-contained free-form response"
+    critique:
+      opponent_error:
+        type: str
+        description: "the specific flaw in your opponent's reasoning, or 'none found'"
+      rebuttal:
+        type: str
+        description: "your defense or concession"
+      answer:
+        type: str
+        description: "your final answer to the question — a complete, self-contained free-form response"
+  debater_b:
+    propose:
+      answer:
+        type: str
+        description: "your final answer to the question — a complete, self-contained free-form response"
+    critique:
+      opponent_error:
+        type: str
+        description: "the specific flaw in your opponent's reasoning, or 'none found'"
+      rebuttal:
+        type: str
+        description: "your defense or concession"
+      answer:
+        type: str
+        description: "your final answer to the question — a complete, self-contained free-form response"
+  judge:
+    final:
+      reasoning: {type: str}
+      decision: {type: str, description: "debater_a, debater_b, or tie", scoring: {mode: enum, values: [debater_a, debater_b, tie]}}
+
+_judge_prompts: gpqa_oe
