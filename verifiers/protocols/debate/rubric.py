@@ -38,9 +38,16 @@ from verifiers.types import (
 )
 from verifiers.utils.judge_prompts import JudgeTemplate, normalize_verdict_token
 
+# gpt-5.x are REASONING models: reasoning tokens count against
+# max_completion_tokens. A 256 ceiling truncates mid-reasoning on hard grading
+# instances (observed reasoning 187-256+ tokens) -> finish_reason="length",
+# EMPTY content -> EmptyModelResponseError aborts the rollout. The verdict itself
+# is one word; the budget exists for the reasoning, so give it real headroom
+# (you pay for tokens actually used, not the ceiling). temperature MUST be the
+# default 1.0 (gpt-5.x reject any other value).
 JUDGE_SAMPLING_ARGS = {
-    "temperature": 0.0,
-    "max_completion_tokens": 256,
+    "temperature": 1.0,
+    "max_completion_tokens": 2048,
     "reasoning_effort": "medium",
 }
 
