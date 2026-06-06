@@ -236,6 +236,8 @@ git_describe_command = [
     "--long",
     "--match",
     "v[0-9]*.[0-9]*.[0-9]*",
+    "--exclude",
+    "*dev*",
 ]
 
 [tool.hatch.build.targets.sdist]
