@@ -11,12 +11,14 @@ Episode scalar:
 
 Diagnostics (weight-0 telemetry; never feed reward):
     per-member: turns, parse_error_count, num_commits, num_unique_commits,
-                accuracy, extraction_failed, initial_correct, final_correct
+                accuracy, extraction_failed, initial_correct, final_correct,
+                grader_error
     episode:    agreement, any_debater_correct, all_debaters_correct,
                 judge_selected_correct, truth_member_correct, truth_member_won,
-                winner
+                winner, matcher_error
 """
 
+import asyncio
 from typing import Any
 
 import verifiers as vf
@@ -350,11 +352,26 @@ class DebateRubric(MultiAgentRubric):
           * correctness metrics: diagnostic-only ground-truth telemetry.
             They never feed member rewards. ``truth_member_*`` metrics are
             present only when the pack explicitly declares a truth side.
+          * diagnostic judge failures set ``grader_error``/``matcher_error``
+            instead of invalidating judge-derived member rewards.
         """
+        async def diagnostic_verdict(
+            answer: str,
+            target: str,
+            spec: FieldSpec | None,
+            kind: str,
+        ) -> bool | None:
+            try:
+                return await self.verdict(answer, target, question, spec, kind, state)
+            except vf.Error:
+                return None
+
         per_member: dict[str, dict[str, float]] = {}
         episode: dict[str, float] = {}
         answer_members: list[str] = []
         final_correct_by_member: dict[str, float] = {}
+        member_commits: dict[str, list[str]] = {}
+        grader_jobs: list[tuple[str, str, asyncio.Task[bool | None]]] = []
 
         for mid in self.members:
             m = snaps[mid]
@@ -377,22 +394,65 @@ class DebateRubric(MultiAgentRubric):
                     dst["extraction_failed"] = 1.0
                 continue
             spec = m["latest_spec"]
-            final = float(
-                await self.verdict(seq[-1], target, question, spec, "grader", state)
-            )
-            dst["accuracy"] = final
-            dst["final_correct"] = final
-            final_correct_by_member[mid] = final
-            dst["extraction_failed"] = 0.0
-            dst["initial_correct"] = (
-                final
-                if seq[0] == seq[-1]
-                else float(
-                    await self.verdict(seq[0], target, question, spec, "grader", state)
+            member_commits[mid] = seq
+            grader_jobs.append(
+                (
+                    mid,
+                    "final",
+                    asyncio.create_task(
+                        diagnostic_verdict(seq[-1], target, spec, "grader")
+                    ),
                 )
             )
+            if seq[0] != seq[-1]:
+                grader_jobs.append(
+                    (
+                        mid,
+                        "initial",
+                        asyncio.create_task(
+                            diagnostic_verdict(seq[0], target, spec, "grader")
+                        ),
+                    )
+                )
 
-        if answer_members:
+        debaters = [
+            (mid, m) for mid, m in snaps.items() if mid != "judge" and m["commits"]
+        ]
+        matcher_task: asyncio.Task[bool | None] | None = None
+        if len(debaters) >= 2:
+            (_, a), (_, b) = debaters[0], debaters[1]
+            spec = a["latest_spec"] or b["latest_spec"]
+            matcher_task = asyncio.create_task(
+                diagnostic_verdict(b["commits"][-1], a["commits"][-1], spec, "matcher")
+            )
+
+        diagnostic_tasks = [task for _, _, task in grader_jobs]
+        if matcher_task is not None:
+            diagnostic_tasks.append(matcher_task)
+        if diagnostic_tasks:
+            await asyncio.gather(*diagnostic_tasks)
+
+        for mid, field, task in grader_jobs:
+            verdict = task.result()
+            dst = per_member[mid]
+            if verdict is None:
+                dst["grader_error"] = 1.0
+                continue
+            value = float(verdict)
+            if field == "final":
+                dst["accuracy"] = value
+                dst["final_correct"] = value
+                final_correct_by_member[mid] = value
+                dst["extraction_failed"] = 0.0
+            else:
+                dst["initial_correct"] = value
+
+        for mid, seq in member_commits.items():
+            dst = per_member[mid]
+            if seq[0] == seq[-1] and "final_correct" in dst:
+                dst["initial_correct"] = dst["final_correct"]
+
+        if answer_members and all(mid in final_correct_by_member for mid in answer_members):
             correctness = [
                 final_correct_by_member.get(mid, 0.0) for mid in answer_members
             ]
@@ -414,17 +474,12 @@ class DebateRubric(MultiAgentRubric):
                 )
                 episode["truth_member_won"] = float(winner == self.truth_member)
 
-        debaters = [
-            (mid, m) for mid, m in snaps.items() if mid != "judge" and m["commits"]
-        ]
-        if len(debaters) >= 2:
-            (_, a), (_, b) = debaters[0], debaters[1]
-            spec = a["latest_spec"] or b["latest_spec"]
-            episode["agreement"] = float(
-                await self.verdict(
-                    b["commits"][-1], a["commits"][-1], question, spec, "matcher", state
-                )
-            )
+        if matcher_task is not None:
+            verdict = matcher_task.result()
+            if verdict is None:
+                episode["matcher_error"] = 1.0
+            else:
+                episode["agreement"] = float(verdict)
 
         return per_member, episode
 
