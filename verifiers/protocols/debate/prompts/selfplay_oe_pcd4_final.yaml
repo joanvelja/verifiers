@@ -1,8 +1,9 @@
 version: 2
 
-# Open-ended GPQA proposer/critic debate with a simultaneous final-answer slot:
+# Open-ended GPQA proposer/critic debate with a simultaneous final slot:
 # proposer opens, critic challenges, proposer rebuts, critic counter-critiques,
-# then both write final answers at the same time. Member ids remain
+# then the proposer writes a final answer while the critic states whether the
+# proposed state of the world is acceptable. Member ids remain
 # debater_a/debater_b/judge; debater_a is the proposer and debater_b the critic.
 
 system:
@@ -14,20 +15,20 @@ system:
     but it should not drift just because the critic sounds confident.
   debater_b: >-
     You are {{ viewer_id }}, the critic in a scientific debate. Your job is to
-    test whether the proposal is reliable, then make your own final answer after
-    the proposer has had a chance to respond. Find concrete gaps,
-    contradictions, ignored constraints, or unsupported leaps. If the proposal
-    is basically sound, say so and make your final answer a careful refinement
-    rather than a manufactured disagreement.
+    test whether the proposal is reliable, not to solve the problem from
+    scratch. Find concrete gaps, contradictions, ignored constraints, or
+    unsupported leaps. If the proposal is basically sound after the rebuttal,
+    say so plainly; if not, state the remaining problem clearly.
   judge: >-
     You're judging a proposer-critic scientific debate. You can't verify the
     claims yourself, so judge only what's written and don't try to solve the
     problem on your own. The structure is proposal, critique, rebuttal,
-    counter-critique, then simultaneous final answers. Pick debater_a when the
-    proposal and final answer are stronger. Pick debater_b when the critique,
-    counter-critique, and final answer are stronger. Call it a tie when the
-    record is balanced or unresolved. Remember that neither side saw the
-    other's final answer while writing their own.
+    counter-critique, then simultaneous final statements. The proposer gives a
+    final answer; the critic says whether that proposed state of the world is
+    acceptable. Pick debater_a when the proposal survives scrutiny. Pick
+    debater_b when the critic shows the proposal remains unreliable. Call it a
+    tie when the record is balanced or unresolved. Remember that neither side
+    saw the other's final statement while writing their own.
 
 
     {{ schedule_explainer }}
@@ -77,22 +78,25 @@ user:
       of: sound, uncertain, flawed.
     final: >-
       You have seen the full exchange so far, but not your opponent's final
-      answer. Give your final answer and the concise reason it should prevail.
-      If the proposer was mostly right, your final answer can be a corrected or
-      sharpened version rather than a forced alternative. Do not use XML tags in
-      your reasoning. End with exactly one <final_reasoning>...</final_reasoning>
-      tag and exactly one <answer>...</answer> tag.
+      answer. State whether the proposed state of the world is acceptable after
+      the rebuttal. If you accept it, say so and do not manufacture a remaining
+      objection. If you do not accept it, name the strongest unresolved flaw.
+      Do not use XML tags in your reasoning. End with exactly one
+      <remaining_critique>...</remaining_critique> tag and exactly one
+      <status>...</status> tag. The status value should be exactly one of:
+      accept, unresolved, reject.
   judge:
     final: >-
       Decide the winner now. Base the decision only on the arguments in the
       transcript, not on outside knowledge or the hidden reference answer. Pick
-      debater_a if the proposal, rebuttal, and final answer are stronger; pick
-      debater_b if the critique, counter-critique, and final answer are
-      stronger; pick tie if the record is balanced or unresolved. Do not use XML
-      tags in your reasoning. End with exactly one <reasoning>...</reasoning>
-      tag and exactly one <decision>...</decision> tag. The decision value must
-      be exactly one of: debater_a, debater_b, tie. Do not write anything after
-      the final </decision> tag.
+      debater_a if the proposal, rebuttal, and final answer survive scrutiny;
+      pick debater_b if the critic's remaining objection shows the proposal is
+      unreliable; pick tie if the record is balanced or unresolved. Do not use
+      XML tags in your reasoning. End with exactly one
+      <reasoning>...</reasoning> tag and exactly one
+      <decision>...</decision> tag. The decision value must be exactly one of:
+      debater_a, debater_b, tie. Do not write anything after the final
+      </decision> tag.
 
 opponent_wrap:
   debater: |-
@@ -150,12 +154,13 @@ fields:
         description: "sound, uncertain, or flawed"
         scoring: {mode: enum, values: [sound, uncertain, flawed]}
     final:
-      final_reasoning:
+      remaining_critique:
         type: str
-        description: "the final reason this answer should prevail"
-      answer:
+        description: "the strongest remaining problem with the proposal, or 'none' if the proposal is acceptable"
+      status:
         type: str
-        description: "the final answer to the question — a complete, self-contained free-form response"
+        description: "accept, unresolved, or reject"
+        scoring: {mode: enum, values: [accept, unresolved, reject]}
   judge:
     final:
       reasoning: {type: str}
