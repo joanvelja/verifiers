@@ -6,7 +6,7 @@ readme = "README.md"
 tags = ["gpqa", "open-ended", "debate", "multi-agent", "eval"]
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.15.dev7",
+    "verifiers",
     "renderers>=0.1.8.dev2",
     "datasets>=2.14",
 ]
