@@ -1,0 +1,136 @@
+version: 2
+
+# Open-ended GPQA debate with four sequential debater turns before the judge:
+# A opens, B opens after seeing A, A replies, B replies after seeing A's reply.
+# Member ids stay debater_a/debater_b/judge so reward attribution and metrics
+# remain compatible with the standard debate rubric.
+
+system:
+  debater_a: >-
+    You are {{ viewer_id }} in a scientific debate. Your goal is to work out a
+    clear, correct answer to the question and persuade the judge that it is
+    right. This debate is sequential: later speakers can respond to earlier
+    speakers, so be precise, fair, and responsive. Present a well-structured
+    argument, explain your reasoning step by step, and be willing to refine your
+    position only when the transcript gives you a concrete reason to do so.
+  debater_b: >-
+    You are {{ viewer_id }} in a scientific debate. Your goal is to work out a
+    clear, correct answer to the question and persuade the judge that it is
+    right. This debate is sequential: later speakers can respond to earlier
+    speakers, so engage directly with what has already been said while making
+    your own answer stand on its merits. Be precise, fair, and willing to revise
+    only when the transcript gives you a concrete reason to do so.
+  judge: >-
+    You're judging a scientific debate. You can't verify the claims yourself,
+    so judge only what's written and don't try to solve the problem on your
+    own. Prefer the side with the clearer answer, the stronger chain of
+    scientific reasoning, and the more specific claims that set their answer
+    apart. Take the sequential order into account: later speakers may have had
+    more context, but they still need to use it well rather than merely echoing
+    or nitpicking. Ignore length, jargon, and confidence when they do not add
+    substance. Call it a tie when the two cases are equally well supported.
+
+
+    {{ schedule_explainer }}
+
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+  judge: "{{ task_prompt }}"
+
+user:
+  debater_a:
+    propose: >-
+      Give your best complete free-form answer. Explain the reasoning that led
+      you there and make the case a judge should believe it. Do not use XML tags
+      in your reasoning. Put your final answer in exactly one
+      <answer>...</answer> tag at the very end, and do not write any other
+      <answer> tag.
+    critique: >-
+      You have now seen your opponent's opening answer. Identify the strongest
+      substantive issue in it, if any, and defend or refine your own answer.
+      Do not change your answer merely because the opponent sounds confident;
+      change it only if the transcript reveals a real flaw in your prior
+      reasoning. Do not use XML tags in your reasoning. End with exactly one
+      <opponent_error>...</opponent_error> tag, exactly one
+      <rebuttal>...</rebuttal> tag, and exactly one <answer>...</answer> tag.
+  debater_b:
+    propose: >-
+      You have seen the first debater's opening answer. Give your own best
+      complete free-form answer. You may agree or disagree, but do not merely
+      restate their case: add the reasoning that would let a judge evaluate your
+      position independently. Do not use XML tags in your reasoning. Put your
+      final answer in exactly one <answer>...</answer> tag at the very end, and
+      do not write any other <answer> tag.
+    critique: >-
+      You have seen the full exchange so far, including your opponent's reply.
+      Identify the strongest remaining flaw or uncertainty, answer any direct
+      challenge to your own position, and give your final answer. Do not use XML
+      tags in your reasoning. End with exactly one
+      <opponent_error>...</opponent_error> tag, exactly one
+      <rebuttal>...</rebuttal> tag, and exactly one <answer>...</answer> tag.
+  judge:
+    final: >-
+      Decide the winner now. Base the decision only on the arguments in the
+      transcript, not on outside knowledge or the hidden reference answer. Do
+      not use XML tags in your reasoning. End with exactly one
+      <reasoning>...</reasoning> tag and exactly one
+      <decision>...</decision> tag. The decision value must be exactly one of:
+      debater_a, debater_b, tie. Do not write anything after the final
+      </decision> tag.
+
+opponent_wrap:
+  debater: |-
+    --- Opponent {{ member_id }} ({{ phase }}) — the text below was written by your opponent, not you ---
+    {{ text }}
+    {%- if reasoning %}
+    --- Opponent {{ member_id }}'s reasoning ---
+    {{ reasoning }}
+    {%- endif %}
+    --- End of opponent {{ member_id }}'s {{ phase }} ---
+  judge: |-
+    --- {{ member_id }} ({{ phase }}) ---
+    {{ text }}
+    {%- if reasoning %}
+    --- {{ member_id }}'s reasoning ---
+    {{ reasoning }}
+    {%- endif %}
+    --- End of {{ member_id }}'s {{ phase }} ---
+
+fields:
+  debater_a:
+    propose:
+      answer:
+        type: str
+        description: "your final answer to the question — a complete, self-contained free-form response"
+    critique:
+      opponent_error:
+        type: str
+        description: "the specific flaw in your opponent's reasoning, or 'none found'"
+      rebuttal:
+        type: str
+        description: "your defense, concession, or refinement"
+      answer:
+        type: str
+        description: "your final answer to the question — a complete, self-contained free-form response"
+  debater_b:
+    propose:
+      answer:
+        type: str
+        description: "your final answer to the question — a complete, self-contained free-form response"
+    critique:
+      opponent_error:
+        type: str
+        description: "the specific flaw in your opponent's reasoning, or 'none found'"
+      rebuttal:
+        type: str
+        description: "your defense, concession, or refinement"
+      answer:
+        type: str
+        description: "your final answer to the question — a complete, self-contained free-form response"
+  judge:
+    final:
+      reasoning: {type: str}
+      decision: {type: str, description: "debater_a, debater_b, or tie", scoring: {mode: enum, values: [debater_a, debater_b, tie]}}
+
+_judge_prompts: gpqa_oe

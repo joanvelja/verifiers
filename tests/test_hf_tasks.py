@@ -809,3 +809,96 @@ def test_hf_debate_default_schedule_has_simultaneous_debater_slots() -> None:
     assert env.schedule.current_slot(KernelState(slot_index=1)).phase == "critique"
     assert env.schedule.current_slot(KernelState(slot_index=2)).agents == ("judge",)
     assert env.schedule.current_slot(KernelState(slot_index=2)).phase == "final"
+
+
+def test_hf_debate_open_ended_sequential4_schedule_pack_loads() -> None:
+    raw = Dataset.from_list([{"question": "What is 2 + 2?", "answer": "4"}])
+    schedule = [
+        {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
+        {"slot_id": 1, "agents": ["debater_b"], "phase": "propose"},
+        {"slot_id": 2, "agents": ["debater_a"], "phase": "critique"},
+        {"slot_id": 3, "agents": ["debater_b"], "phase": "critique"},
+        {"slot_id": 4, "agents": ["judge"], "phase": "final"},
+    ]
+
+    env = load_hf_debate(
+        dataset=raw,
+        task_type="open_ended",
+        prompts_ref="selfplay_oe_sequential4",
+        schedule=schedule,
+    )
+
+    assert [
+        (slot.slot_id, slot.agents, slot.phase)
+        for slot in env.schedule._slots
+    ] == [
+        (0, ("debater_a",), "propose"),
+        (1, ("debater_b",), "propose"),
+        (2, ("debater_a",), "critique"),
+        (3, ("debater_b",), "critique"),
+        (4, ("judge",), "final"),
+    ]
+
+
+def test_hf_debate_open_ended_pcd4_schedule_pack_loads() -> None:
+    raw = Dataset.from_list([{"question": "What is 2 + 2?", "answer": "4"}])
+    schedule = [
+        {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
+        {"slot_id": 1, "agents": ["debater_b"], "phase": "critique"},
+        {"slot_id": 2, "agents": ["debater_a"], "phase": "rebuttal"},
+        {"slot_id": 3, "agents": ["debater_b"], "phase": "counter_proposal"},
+        {"slot_id": 4, "agents": ["judge"], "phase": "final"},
+    ]
+
+    env = load_hf_debate(
+        dataset=raw,
+        task_type="open_ended",
+        prompts_ref="selfplay_oe_pcd4",
+        schedule=schedule,
+    )
+
+    assert [
+        (slot.slot_id, slot.agents, slot.phase)
+        for slot in env.schedule._slots
+    ] == [
+        (0, ("debater_a",), "propose"),
+        (1, ("debater_b",), "critique"),
+        (2, ("debater_a",), "rebuttal"),
+        (3, ("debater_b",), "counter_proposal"),
+        (4, ("judge",), "final"),
+    ]
+    assert env.rubric.member_declares_answer["debater_a"] is True
+    assert env.rubric.member_declares_answer["debater_b"] is True
+
+
+def test_hf_debate_open_ended_pcd4_final_schedule_pack_loads() -> None:
+    raw = Dataset.from_list([{"question": "What is 2 + 2?", "answer": "4"}])
+    schedule = [
+        {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
+        {"slot_id": 1, "agents": ["debater_b"], "phase": "critique"},
+        {"slot_id": 2, "agents": ["debater_a"], "phase": "rebuttal"},
+        {"slot_id": 3, "agents": ["debater_b"], "phase": "counter_critique"},
+        {"slot_id": 4, "agents": ["debater_a", "debater_b"], "phase": "final"},
+        {"slot_id": 5, "agents": ["judge"], "phase": "final"},
+    ]
+
+    env = load_hf_debate(
+        dataset=raw,
+        task_type="open_ended",
+        prompts_ref="selfplay_oe_pcd4_final",
+        schedule=schedule,
+    )
+
+    assert [
+        (slot.slot_id, slot.agents, slot.phase)
+        for slot in env.schedule._slots
+    ] == [
+        (0, ("debater_a",), "propose"),
+        (1, ("debater_b",), "critique"),
+        (2, ("debater_a",), "rebuttal"),
+        (3, ("debater_b",), "counter_critique"),
+        (4, ("debater_a", "debater_b"), "final"),
+        (5, ("judge",), "final"),
+    ]
+    assert env.rubric.member_declares_answer["debater_a"] is True
+    assert env.rubric.member_declares_answer["debater_b"] is True
