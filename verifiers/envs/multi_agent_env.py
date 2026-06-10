@@ -200,20 +200,23 @@ class MultiAgentEnv(vf.Environment):
                 member_id,
                 slot.slot_id,
             )
-            return Response(
+            response = Response(
                 id=f"reasoning-only-empty:{member_id}:{slot.slot_id}",
                 created=int(time.time()),
                 model=state["model"],
-                usage=None,
+                usage=exc.usage,
                 message=ResponseMessage(
                     content="",
                     reasoning_content=exc.reasoning_content,
                     finish_reason="stop",
                     is_truncated=False,
-                    tokens=None,
+                    tokens=exc.tokens,
                     tool_calls=None,
                 ),
             )
+            if request_context.usage_tracker is not None:
+                request_context.usage_tracker.increment_from_response(response)
+            return response
 
     # -- prompt preparation --------------------------------------------------
 

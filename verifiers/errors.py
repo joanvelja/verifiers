@@ -1,3 +1,9 @@
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from verifiers.types import ResponseTokens, Usage
+
+
 class Error(Exception):
     """Base class for all errors."""
 
@@ -23,9 +29,18 @@ class EmptyModelResponseError(InvalidModelResponseError):
 class ReasoningOnlyEmptyResponseError(EmptyModelResponseError):
     """Model produced private reasoning but no visible content/tool call."""
 
-    def __init__(self, message: str, *, reasoning_content: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        reasoning_content: str | None = None,
+        usage: "Usage | None" = None,
+        tokens: "ResponseTokens | None" = None,
+    ) -> None:
         super().__init__(message)
         self.reasoning_content = reasoning_content
+        self.usage = usage
+        self.tokens = tokens
 
 
 class RolloutTimeoutError(Error):

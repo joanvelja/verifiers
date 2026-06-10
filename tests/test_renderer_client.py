@@ -378,8 +378,20 @@ async def test_renderer_client_rejects_reasoning_only_native_response():
     with pytest.raises(
         ReasoningOnlyEmptyResponseError, match="reasoning but no content"
     ) as exc_info:
-        await client.raise_from_native_response({"reasoning_content": "hidden chain"})
+        await client.raise_from_native_response(
+            {
+                "reasoning_content": "hidden chain",
+                "prompt_ids": [1, 2],
+                "completion_ids": [3, 4, 5],
+            }
+        )
     assert exc_info.value.reasoning_content == "hidden chain"
+    assert exc_info.value.usage is not None
+    assert exc_info.value.usage.prompt_tokens == 2
+    assert exc_info.value.usage.completion_tokens == 3
+    assert exc_info.value.usage.total_tokens == 5
+    assert exc_info.value.tokens is not None
+    assert exc_info.value.tokens.completion_ids == [3, 4, 5]
 
 
 @pytest.mark.asyncio

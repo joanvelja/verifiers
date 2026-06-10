@@ -711,9 +711,12 @@ class RendererClient(
         has_reasoning = bool(response.get("reasoning_content"))
         if not (has_content or has_tool_calls):
             if has_reasoning:
+                tokens = _tokens_from_native_response(response)
                 raise ReasoningOnlyEmptyResponseError(
                     "Model returned reasoning but no content and did not call any tools",
                     reasoning_content=response.get("reasoning_content"),
+                    usage=_usage_from_tokens(tokens),
+                    tokens=tokens,
                 )
             raise EmptyModelResponseError(
                 "Model returned no content and did not call any tools"
@@ -758,34 +761,13 @@ class RendererClient(
                 for i, tc in enumerate(usable_tcs)
             ]
 
-        prompt_ids = response.get("prompt_ids", [])
-        completion_ids = response.get("completion_ids", [])
-        completion_logprobs = response.get("completion_logprobs", [])
-
-        tokens = ResponseTokens(
-            prompt_ids=prompt_ids,
-            prompt_mask=[0] * len(prompt_ids),
-            completion_ids=completion_ids,
-            completion_mask=[1] * len(completion_ids),
-            completion_logprobs=completion_logprobs,
-            routed_experts=response.get("routed_experts"),
-            multi_modal_data=response.get("multi_modal_data"),
-            prompt_attribution=response.get("prompt_attribution"),
-        )
-
-        # /inference/v1/generate doesn't return usage; reconstruct from tokens.
-        usage = Usage(
-            prompt_tokens=len(prompt_ids),
-            reasoning_tokens=0,
-            completion_tokens=len(completion_ids),
-            total_tokens=len(prompt_ids) + len(completion_ids),
-        )
+        tokens = _tokens_from_native_response(response)
 
         return Response(
             id=response.get("request_id", ""),
             created=0,
             model="",
-            usage=usage,
+            usage=_usage_from_tokens(tokens),
             message=ResponseMessage(
                 content=content,
                 reasoning_content=reasoning_content,
@@ -795,3 +777,31 @@ class RendererClient(
                 tool_calls=tool_calls,
             ),
         )
+
+
+def _tokens_from_native_response(response: dict[str, Any]) -> ResponseTokens:
+    prompt_ids = response.get("prompt_ids", [])
+    completion_ids = response.get("completion_ids", [])
+    completion_logprobs = response.get("completion_logprobs", [])
+    return ResponseTokens(
+        prompt_ids=prompt_ids,
+        prompt_mask=[0] * len(prompt_ids),
+        completion_ids=completion_ids,
+        completion_mask=[1] * len(completion_ids),
+        completion_logprobs=completion_logprobs,
+        routed_experts=response.get("routed_experts"),
+        multi_modal_data=response.get("multi_modal_data"),
+        prompt_attribution=response.get("prompt_attribution"),
+    )
+
+
+def _usage_from_tokens(tokens: ResponseTokens) -> Usage:
+    # /inference/v1/generate doesn't return usage; reconstruct from tokens.
+    prompt_tokens = len(tokens.prompt_ids)
+    completion_tokens = len(tokens.completion_ids)
+    return Usage(
+        prompt_tokens=prompt_tokens,
+        reasoning_tokens=0,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )

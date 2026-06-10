@@ -157,6 +157,12 @@ class _ReasoningOnlyClient(_RecordingClient):
             raise vf.ReasoningOnlyEmptyResponseError(
                 "Model returned reasoning but no content and did not call any tools",
                 reasoning_content="private reasoning",
+                usage=Usage(
+                    prompt_tokens=5,
+                    reasoning_tokens=0,
+                    completion_tokens=2,
+                    total_tokens=7,
+                ),
             )
         return await super().get_response(
             prompt, model, sampling_args, tools=tools, **kwargs
@@ -890,6 +896,42 @@ async def test_reasoning_only_empty_response_quarantines_member_not_slot() -> No
     by_member = {step["extras"]["member_id"]: step for step in state["trajectory"]}
     assert by_member["agent_a"]["extras"]["parse_error"]
     assert "parse_error" not in by_member["agent_b"]["extras"]
+    assert by_member["agent_a"]["response"].usage is not None
+    assert by_member["agent_a"]["response"].usage.completion_tokens == 2
+    assert state["usage"]["input_tokens"] == 5.0
+    assert state["usage"]["output_tokens"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_quarantine_counts_toward_completion_token_limit() -> None:
+    env = _TwoRoundSimultaneousEnv(
+        schedule=StaticSchedule(
+            (
+                TurnSlot(slot_id=0, agents=("agent_a",), phase="round"),
+                TurnSlot(slot_id=1, agents=("agent_a",), phase="round"),
+            )
+        ),
+        members=["agent_a"],
+        dataset=lambda: None,
+        score_rollouts=False,
+    )
+    env.set_max_total_completion_tokens(2)
+
+    state = await env.rollout(
+        {
+            "prompt": [{"role": "user", "content": "question"}],
+            "answer": "answer",
+            "example_id": "reasoning-only-token-limit",
+        },
+        _ReasoningOnlyClient(),
+        "test-model",
+        {},
+    )
+
+    assert len(state["trajectory"]) == 1
+    assert state["is_completed"] is True
+    assert state["stop_condition"] == "max_total_completion_tokens_reached"
+    assert state["usage"]["output_tokens"] == 2.0
 
 
 @pytest.mark.asyncio
