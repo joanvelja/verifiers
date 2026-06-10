@@ -19,6 +19,8 @@ Covers the P0 fixes for the multi-agent serialization boundary:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -333,9 +335,29 @@ def _orchestrator_kwargs(env) -> dict[str, Any]:
     )
 
 
+def _load_verifiers_rl_orchestrator() -> type:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "packages"
+        / "verifiers-rl"
+        / "verifiers_rl"
+        / "rl"
+        / "trainer"
+        / "orchestrator.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_verifiers_rl_orchestrator_under_test",
+        path,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.Orchestrator
+
+
 def test_orchestrator_rejects_multi_agent_rubric() -> None:
-    pytest.importorskip("verifiers_rl")
-    from verifiers_rl.rl.trainer.orchestrator import Orchestrator  # type: ignore[unresolved-import]
+    Orchestrator = _load_verifiers_rl_orchestrator()
 
     env = _FakeEnv(rubric=_FakeMARubric())
     with pytest.raises(NotImplementedError, match="MultiAgentRubric"):
@@ -343,9 +365,9 @@ def test_orchestrator_rejects_multi_agent_rubric() -> None:
 
 
 def test_orchestrator_rejects_rubric_group_containing_multi_agent_rubric() -> None:
-    pytest.importorskip("verifiers_rl")
-    from verifiers_rl.rl.trainer.orchestrator import Orchestrator  # type: ignore[unresolved-import]
     from verifiers.rubrics.rubric_group import RubricGroup
+
+    Orchestrator = _load_verifiers_rl_orchestrator()
 
     env = _FakeEnv(rubric=RubricGroup(rubrics=[_FakeMARubric()]))
     with pytest.raises(NotImplementedError, match="MultiAgentRubric"):

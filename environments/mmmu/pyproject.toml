@@ -15,8 +15,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["mmmu.py"]
+include = ["mmmu.py", "pyproject.toml"]
 
 [tool.verifiers.eval]
+api_client_type = "openai_responses"
 num_examples = 5
 rollouts_per_example = 3

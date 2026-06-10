@@ -33,6 +33,20 @@ from verifiers.utils.judge_prompts import (
 _PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 _ROLE_NAMES = {"judge", "debater_a", "debater_b"}
+_TOP_LEVEL_KEYS = frozenset(
+    {
+        "version",
+        "system",
+        "question",
+        "user",
+        "think",
+        "fields",
+        "opponent_wrap",
+        "_judge_prompts",
+        "_grader",
+        "_matcher",
+    }
+)
 _TAG_NAME_RE = re.compile(r"^\w+$")
 _THINK_VISIBILITY_LEVELS = frozenset(
     {"disabled", "private", "visible_to_judge", "open"}
@@ -79,7 +93,6 @@ class DebatePrompts:
     question: dict[str, jinja2.Template]
     fields: dict[str, dict[str, dict[str, FieldSpec]]]
     think_visibility: dict[str, str]
-    prefill: dict[str, dict[str, jinja2.Template]]
     opponent_wrap: dict[str, jinja2.Template] | None
     judges: dict[str, JudgeTemplate]
     source_ref: str
@@ -159,14 +172,6 @@ class DebatePrompts:
             parts.append(field_instr)
 
         return "\n\n".join(parts) if parts else None
-
-    def render_prefill(self, role: str, phase: str, ctx: dict[str, Any]) -> str | None:
-        role_block = self.prefill.get(role, {})
-        tmpl = role_block.get(phase) or role_block.get("default")
-        if tmpl is None:
-            return None
-        result = tmpl.render(ctx).strip()
-        return result if result else None
 
     def wrap_opponent(
         self,
@@ -326,7 +331,6 @@ def resolve_prompts(ref: str) -> DebatePrompts:
     user = _compile_templates(d.get("user", {}))
     question = _compile_flat_templates(d.get("question", {}))
     think_visibility = _normalize_think(d.get("think", {}))
-    prefill = _compile_templates(d.get("prefill", {}))
     fields = _parse_fields(d.get("fields", {}))
     judges = compile_judge_blocks(d)
 
@@ -341,7 +345,6 @@ def resolve_prompts(ref: str) -> DebatePrompts:
         question=question,
         fields=fields,
         think_visibility=think_visibility,
-        prefill=prefill,
         opponent_wrap=opponent_wrap,
         judges=judges,
         source_ref=str(path),
@@ -405,6 +408,13 @@ def _reject_per_turn_vars(template: str, *, where: str) -> None:
 def _validate(d: dict) -> None:
     if d.get("version") != 2:
         raise ValueError(f"Unsupported prompt version: {d.get('version')} (expected 2)")
+
+    unknown_keys = sorted(set(d) - _TOP_LEVEL_KEYS)
+    if unknown_keys:
+        raise ValueError(
+            f"Unknown prompt pack top-level key(s) {unknown_keys}. "
+            f"Expected keys: {sorted(_TOP_LEVEL_KEYS)}"
+        )
 
     validate_judge_blocks(d)
 

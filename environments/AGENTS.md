@@ -609,6 +609,67 @@ async def answer_detected(self, state: vf.State) -> bool:
     return await self.validator_client.check_for_answer(state)
 ```
 
+### Multi-Agent Environments
+
+Use `MultiAgentEnv` when a rollout is not a single alternating user/assistant conversation, but a scheduled protocol among multiple model seats. `MultiAgentEnv` is a sibling of `MultiTurnEnv`, not a subclass: it owns a slot scheduler, per-member request context, simultaneous-turn barriers, and a shared transcript.
+
+The constructor takes a `schedule` and an explicit `members` list:
+
+```python
+import verifiers as vf
+from verifiers.envs.multi_agent_kernel import StaticSchedule, TurnSlot
+
+
+schedule = StaticSchedule(
+    (
+        TurnSlot(slot_id=0, agents=("proposer", "critic"), phase="propose"),
+        TurnSlot(slot_id=1, agents=("judge",), phase="final"),
+    )
+)
+
+
+class MyProtocol(vf.MultiAgentEnv):
+    async def build_prompt(
+        self, state: vf.State, member_id: str, slot: TurnSlot
+    ) -> vf.Messages:
+        return [{"role": "user", "content": f"{member_id} view at {slot.phase}"}]
+
+    async def render_completion(self, state: vf.State) -> None:
+        state["completion"] = [
+            msg for step in state["trajectory"] for msg in step["completion"]
+        ]
+```
+
+Subclasses usually override these hooks:
+
+- `build_prompt(state, member_id, slot)` — render the member-specific prompt for the current slot.
+- `render_completion(state)` — flatten the shared trajectory into the saved rollout completion.
+- `extract_fields(public_channel, member_id, slot)` — parse structured public fields from each committed turn.
+- `visibility_policy(utterance, viewer_id)` — choose whether a viewer sees a prior turn as `full`, `public_only`, or `hidden`.
+- `split_response_channels(response, member_id, slot)` — split provider output into public/private protocol channels.
+
+Each slot is either sequential (`agents=("judge",)`) or simultaneous (`agents=("proposer", "critic")`). Simultaneous slots stage every branch before publishing; if one branch fails, the kernel and saved trajectory remain unmodified for that slot. Stop conditions are priority-ordered so rollout errors win over token limits, token limits win over schedule exhaustion, and schedule exhaustion wins over prompt-length flags.
+
+Multi-agent scoring should use `MultiAgentRubric` and return a `MARScore` with one `MemberScore` per member. `state["mar_score"]` is the canonical multi-agent score record; member rewards are projected from it for serialization and orchestration.
+
+```python
+class MyRubric(vf.MultiAgentRubric):
+    async def build_marscore(self, state: vf.State) -> vf.MARScore:
+        winner = state.get("winner")
+        return vf.MARScore(
+            members=[
+                vf.MemberScore(
+                    member_id=member,
+                    reward=1.0 if member == winner else 0.0,
+                )
+                for member in self.members
+            ],
+            episode_scalar=0.0,
+        )
+```
+
+For trainers that expect one rollout per generated model response, convert a saved multi-agent rollout with `vf.rollout_to_member_rollouts(output)`. This preserves the original rollout identity while producing member-specific records with the correct prompt, completion, reward, generation metadata, and task payload. `EnvGroup` intentionally rejects multi-agent sub-environments; group composition and member projection are separate contracts.
+
 ### Error Handling
 
 Verifiers defines a hierarchy of error types under `vf.Error`:

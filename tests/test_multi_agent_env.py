@@ -7,7 +7,7 @@ import pytest
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.envs.multi_agent_env import MultiAgentEnv
-from verifiers.envs.multi_agent_kernel import StaticSchedule, TurnSlot
+from verifiers.envs.multi_agent_kernel import KernelState, StaticSchedule, TurnSlot
 from verifiers.types import (
     ClientConfig,
     GenerationTarget,
@@ -293,6 +293,65 @@ class _ZeroMARubric(vf.MultiAgentRubric):
             members=[MemberScore(member_id=mid, reward=0.0) for mid in self.members],
             episode_scalar=0.0,
         )
+
+
+def _single_slot_env() -> _TwoRoundSimultaneousEnv:
+    return _TwoRoundSimultaneousEnv(
+        schedule=StaticSchedule(
+            (TurnSlot(slot_id=0, agents=("agent_a",), phase="round"),)
+        ),
+        members=["agent_a"],
+        dataset=lambda: None,
+        score_rollouts=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_stop_priority_ladder_prefers_errors() -> None:
+    env = _single_slot_env()
+    env.set_max_total_completion_tokens(1)
+    state = State(
+        error=vf.Error("boom"),
+        prompt_too_long=True,
+        usage={"input_tokens": 0.0, "output_tokens": 3.0},
+        _kernel=KernelState(slot_index=1),
+        trajectory=[],
+    )
+
+    assert await env.is_completed(state) is True
+    assert state["stop_condition"] == "has_error"
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_stop_priority_ladder_prefers_token_limit_before_schedule() -> (
+    None
+):
+    env = _single_slot_env()
+    env.set_max_total_completion_tokens(1)
+    state = State(
+        prompt_too_long=True,
+        usage={"input_tokens": 0.0, "output_tokens": 3.0},
+        _kernel=KernelState(slot_index=1),
+        trajectory=[],
+    )
+
+    assert await env.is_completed(state) is True
+    assert state["stop_condition"] == "max_total_completion_tokens_reached"
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_stop_priority_ladder_prefers_schedule_before_prompt_length() -> (
+    None
+):
+    env = _single_slot_env()
+    state = State(
+        prompt_too_long=True,
+        _kernel=KernelState(slot_index=1),
+        trajectory=[],
+    )
+
+    assert await env.is_completed(state) is True
+    assert state["stop_condition"] == "schedule_exhausted"
 
 
 @pytest.mark.asyncio

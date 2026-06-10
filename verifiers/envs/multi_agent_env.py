@@ -76,9 +76,9 @@ class MultiAgentEnv(vf.Environment):
 
     Monotonic prompt invariant (subclass CONTRACT):
         ``build_prompt(state, A, slot_N+1)`` MUST structurally extend
-        ``build_prompt(state, A, slot_N)`` by appending at most a
-        [user, assistant-prefill] pair at the tail. No prior messages
-        modified or removed. Violating this defeats the vLLM prefix-cache
+        ``build_prompt(state, A, slot_N)`` by appending only new tail
+        messages. No prior messages modified or removed. Violating this defeats
+        the vLLM prefix-cache
         reuse path in ``OpenAIChatCompletionsTokenClient`` and forces
         O(T²) tokenization over a T-turn episode.
     """

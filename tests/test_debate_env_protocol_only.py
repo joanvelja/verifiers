@@ -42,7 +42,6 @@ def _pack() -> DebatePrompts:
         question={m: _je.from_string("{{ task_prompt }}") for m in members},
         fields={},
         think_visibility={},
-        prefill={},
         opponent_wrap=None,
         judges={},
         source_ref="<test>",
