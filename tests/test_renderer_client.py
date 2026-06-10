@@ -82,6 +82,22 @@ def test_renderer_client_uses_renderer_model_name_override():
     )
 
 
+def test_renderer_client_renderer_pool_failure_is_actionable():
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(client_type="renderer")
+
+    with patch(
+        "verifiers.clients.renderer_client.create_renderer_pool",
+        side_effect=ValueError("unknown renderer"),
+    ):
+        with pytest.raises(RuntimeError, match="Qwen/Unknown"):
+            client._get_renderer_or_pool("Qwen/Unknown")
+
+
 def test_renderer_client_threads_chat_template_kwargs_into_pool():
     """``sampling_args.extra_body.chat_template_kwargs`` land on the
     concrete RendererConfig (resolving Auto/None against

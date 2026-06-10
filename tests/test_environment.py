@@ -310,10 +310,10 @@ class TestEnvironmentBase:
         assert first_tool.name == "echo"
 
     @pytest.mark.asyncio
-    async def test_init_state_rejects_plain_string_task(
+    async def test_init_state_strips_plain_string_task_column(
         self, mock_client, sample_dataset, make_input
     ):
-        """Plain string task routes are not part of the rollout input schema."""
+        """Legacy string task routes do not replace the rollout payload."""
         env = SimpleEnvironment(
             dataset=sample_dataset,
             parser=Parser(),
@@ -321,13 +321,19 @@ class TestEnvironmentBase:
         )
         input_data = dict(make_input(prompt=[{"role": "user", "content": "Hello"}]))
         input_data["task"] = "legacy-route"
+        input_data["src_id"] = "source-row-1"
 
-        with pytest.raises(ValueError, match="Plain string task routes"):
-            await env.init_state(
-                input=cast(RolloutInput, input_data),
-                client=mock_client,
-                model="test-model",
-            )
+        state = await env.init_state(
+            input=cast(RolloutInput, input_data),
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert state["task"]["prompt"] == [{"role": "user", "content": "Hello"}]
+        assert state["task"]["src_id"] == "source-row-1"
+        assert "task" not in state["task"]
+        assert "task" not in state["input"]
+        assert state["input"]["src_id"] == "source-row-1"
 
     @pytest.mark.asyncio
     async def test_init_state_accepts_json_task_payload(
@@ -347,6 +353,7 @@ class TestEnvironmentBase:
         }
         input_data = dict(make_input(prompt=[{"role": "user", "content": "ignored"}]))
         input_data["task"] = json.dumps(task_payload)
+        input_data["src_id"] = "source-row-3"
 
         state = await env.init_state(
             input=cast(RolloutInput, input_data),
@@ -356,6 +363,8 @@ class TestEnvironmentBase:
 
         assert state["task"] == task_payload
         assert state["input"]["custom"] == "field"
+        assert state["input"]["src_id"] == "source-row-3"
+        assert "task" not in state["input"]
         assert state["prompt"][0]["content"] == "Hello"
 
     @pytest.mark.asyncio

@@ -7,7 +7,7 @@ tags = ["gpqa", "open-ended", "debate", "multi-agent", "eval"]
 requires-python = ">=3.11"
 dependencies = [
     "verifiers",
-    "renderers>=0.1.8.dev2",
+    "renderers>=0.1.8.dev28",
     "datasets>=2.14",
 ]
 

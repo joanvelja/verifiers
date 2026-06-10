@@ -6,7 +6,8 @@ Covers:
 
 import pytest
 
-from verifiers.types import GenerateOutputs
+import verifiers.utils.eval_utils as eval_utils
+from verifiers.types import ClientConfig, EvalConfig, GenerateOutputs
 from verifiers.utils.save_utils import states_to_outputs
 
 
@@ -154,6 +155,51 @@ def test_print_results_includes_usage(capsys, make_metadata, make_output):
     assert "Usage:" in captured.out
     assert "input_tokens (avg): 8.000" in captured.out
     assert "output_tokens (avg): 3.000" in captured.out
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_raises_when_every_rollout_errors(
+    monkeypatch, make_metadata, make_output
+):
+    output = make_output(example_id=0, reward=0.0)
+    output["error"] = {
+        "error": "parse failed",
+        "error_chain_repr": "parse failed",
+        "error_chain_str": "parse failed",
+    }
+    metadata = make_metadata(num_examples=1, rollouts_per_example=1)
+
+    class FullyErroredEnv:
+        env_id = "test-env"
+        env_args = {}
+
+        def set_kwargs(self, **_: object) -> None:
+            pass
+
+        async def evaluate(self, **_: object) -> GenerateOutputs:
+            return GenerateOutputs(outputs=[output], metadata=metadata)
+
+    monkeypatch.setattr(
+        eval_utils.vf,
+        "load_environment",
+        lambda **_: FullyErroredEnv(),
+    )
+
+    config = EvalConfig(
+        env_id="test-env",
+        env_args={},
+        env_dir_path="./environments",
+        model="test-model",
+        client_config=ClientConfig(api_base_url="https://example.test/v1"),
+        sampling_args={},
+        num_examples=1,
+        rollouts_per_example=1,
+        max_concurrent=1,
+        disable_env_server=True,
+    )
+
+    with pytest.raises(RuntimeError, match="errored every rollout"):
+        await eval_utils.run_evaluation(config)
 
 
 def test_attach_metadata_cost_uses_total_output_usage(make_metadata, make_output):

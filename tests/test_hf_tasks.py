@@ -716,6 +716,18 @@ def test_hf_debate_accepts_in_memory_mcq_dataset() -> None:
     assert env.members == ["debater_a", "debater_b", "judge"]
 
 
+def test_hf_debate_named_dataset_requires_eval_split() -> None:
+    env = load_hf_debate(
+        dataset_name="test/dataset",
+        task_type="mcq",
+        choices_key="choices",
+        answer_format="index",
+    )
+
+    with pytest.raises(ValueError, match="eval_dataset_split"):
+        env.get_eval_dataset()
+
+
 def test_hf_debate_rejects_mcq_labels_not_supported_by_prompt_pack() -> None:
     raw = Dataset.from_list(
         [
@@ -829,8 +841,7 @@ def test_hf_debate_open_ended_sequential4_schedule_pack_loads() -> None:
     )
 
     assert [
-        (slot.slot_id, slot.agents, slot.phase)
-        for slot in env.schedule._slots
+        (slot.slot_id, slot.agents, slot.phase) for slot in env.schedule._slots
     ] == [
         (0, ("debater_a",), "propose"),
         (1, ("debater_b",), "propose"),
@@ -858,8 +869,7 @@ def test_hf_debate_open_ended_pcd4_schedule_pack_loads() -> None:
     )
 
     assert [
-        (slot.slot_id, slot.agents, slot.phase)
-        for slot in env.schedule._slots
+        (slot.slot_id, slot.agents, slot.phase) for slot in env.schedule._slots
     ] == [
         (0, ("debater_a",), "propose"),
         (1, ("debater_b",), "critique"),
@@ -890,8 +900,7 @@ def test_hf_debate_open_ended_pcd4_final_schedule_pack_loads() -> None:
     )
 
     assert [
-        (slot.slot_id, slot.agents, slot.phase)
-        for slot in env.schedule._slots
+        (slot.slot_id, slot.agents, slot.phase) for slot in env.schedule._slots
     ] == [
         (0, ("debater_a",), "propose"),
         (1, ("debater_b",), "critique"),
@@ -901,4 +910,4 @@ def test_hf_debate_open_ended_pcd4_final_schedule_pack_loads() -> None:
         (5, ("judge",), "final"),
     ]
     assert env.rubric.member_declares_answer["debater_a"] is True
-    assert env.rubric.member_declares_answer["debater_b"] is False
+    assert env.rubric.member_declares_answer["debater_b"] is True

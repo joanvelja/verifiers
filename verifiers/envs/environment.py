@@ -69,6 +69,7 @@ from verifiers.types import (
     TokenUsage,
     Tool,
     flatten_task_input,
+    optional_task_payload,
 )
 from verifiers.utils.async_utils import (
     maybe_call_with_named_args,
@@ -603,7 +604,17 @@ class Environment(ABC):
         rollout_id = state_input.get("rollout_id")
         state_task = flatten_task_input(state_input)
         state_task.pop("rollout_id", None)
-        state_input = cast(RolloutInput, dict(state_task))
+
+        direct_task_payload = state_input.get("task")
+        merged_input = dict(state_input)
+        if direct_task_payload is not None:
+            merged_input.pop("task", None)
+            if optional_task_payload(direct_task_payload) is not None:
+                merged_input.update(state_task)
+        elif state_task is not state_input:
+            merged_input.update(state_task)
+
+        state_input = cast(RolloutInput, merged_input)
         if rollout_id is not None:
             state_input["rollout_id"] = rollout_id
         state = State(input=state_input)

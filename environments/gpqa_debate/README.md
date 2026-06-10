@@ -17,7 +17,7 @@
 
 ### Requirements
 - `HF_TOKEN` is required for the gated GPQA dataset.
-- This environment depends on `verifiers>=0.1.15.dev7` plus `renderers>=0.1.8.dev2`. Use a local `verifiers` checkout or a published/pinned version that includes `MultiAgentEnv`, `DebateEnv`, `MultiAgentRubric`, `MARScore`, and `RendererClient`.
+- This environment depends on `verifiers>=0.1.15.dev7` plus `renderers>=0.1.8.dev28`. Use a local `verifiers` checkout or a published/pinned version that includes `MultiAgentEnv`, `DebateEnv`, `MultiAgentRubric`, `MARScore`, and `RendererClient`.
 - This env defaults `prime eval run` to `api_client_type="renderer"`. Use `--api-client-type openai_chat_completions_token` when running against a token-route vLLM endpoint, or `--api-client-type openai_chat_completions` for generic OpenAI-compatible chat endpoints.
 - Runtime routing is intentionally outside this package. Learner/opponent endpoints, provider pinning, LoRA aliases, and seat-selection policy should be handled by the rollout runtime using per-request `member_id` metadata.
 

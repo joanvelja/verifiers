@@ -540,11 +540,20 @@ class RendererClient(
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
-                self._shared_pools[cache_key] = create_renderer_pool(
-                    renderer_model,
-                    renderer_config,
-                    size=self._pool_size,
-                )
+                try:
+                    self._shared_pools[cache_key] = create_renderer_pool(
+                        renderer_model,
+                        renderer_config,
+                        size=self._pool_size,
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        "Failed to create renderer pool for model "
+                        f"{renderer_model!r}. Set api_client_type to a non-renderer "
+                        "client for provider-rendered chat, or set "
+                        "renderer_model_name / renderer_config for a supported "
+                        "renderer-tokenized model."
+                    ) from e
 
         return self._shared_pools[cache_key]
 

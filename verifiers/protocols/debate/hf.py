@@ -56,6 +56,7 @@ def load_hf_debate_environment(
     dataset_streaming: bool = False,
     dataset_columns: Sequence[str] | None = None,
     dataset_streaming_shuffle_buffer_size: int | None = None,
+    allow_eval_train_split_fallback: bool = False,
     dataset: Dataset | None = None,
     eval_dataset: Dataset | None = None,
     task_type: TaskType = "mcq",
@@ -155,6 +156,17 @@ def load_hf_debate_environment(
         elif resolved_dataset is not None:
             raw = resolved_dataset
         else:
+            if (
+                eval_dataset_split is None
+                and dataset_split == "train"
+                and not allow_eval_train_split_fallback
+            ):
+                raise ValueError(
+                    "eval_dataset_split is required for named HF datasets when "
+                    "dataset_split='train'. Pass eval_dataset, set "
+                    "eval_dataset_split, or set allow_eval_train_split_fallback=True "
+                    "to intentionally evaluate on the training split."
+                )
             raw = _load_required_dataset(
                 dataset_name=dataset_name,
                 dataset_subset=dataset_subset,

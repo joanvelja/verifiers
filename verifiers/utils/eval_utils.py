@@ -92,6 +92,14 @@ def _attach_metadata_cost(
     return cost
 
 
+def _raise_if_every_rollout_errored(outputs: list[RolloutOutput]) -> None:
+    if outputs and all(output.get("error") is not None for output in outputs):
+        raise RuntimeError(
+            "Evaluation errored every rollout; failing instead of reporting a "
+            "successful zero-signal run."
+        )
+
+
 def _attach_metadata_name(metadata: GenerateMetadata, name: str | None) -> bool:
     if name is None:
         return False
@@ -1148,6 +1156,7 @@ async def run_evaluation(
         metadata_changed = True
     if metadata_changed and config.save_results:
         await asyncio.to_thread(save_metadata, outputs["metadata"], results_path)
+    _raise_if_every_rollout_errored(outputs["outputs"])
 
     return outputs
 

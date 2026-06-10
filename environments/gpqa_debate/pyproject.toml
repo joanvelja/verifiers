@@ -9,7 +9,7 @@ dependencies = [
     # Renderer is the env default; consumers may pin the concrete verifiers
     # version in their workspace or lockfile.
     "verifiers>=0.1.15.dev7",
-    "renderers>=0.1.8.dev2",
+    "renderers>=0.1.8.dev28",
     "datasets>=2.14",
 ]
 

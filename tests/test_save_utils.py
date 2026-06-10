@@ -200,6 +200,26 @@ class TestSavingMetadata:
             metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
         )
 
+    def test_generate_outputs_builder_records_api_client_type(self):
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(
+                api_base_url="http://localhost:8000/v1",
+                client_type="renderer",
+            ),
+            num_examples=1,
+            rollouts_per_example=1,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+        )
+
+        metadata = builder.build_metadata()
+
+        assert metadata["api_client_type"] == "renderer"
+
     def test_generate_outputs_builder_sorts_mixed_example_ids(self):
         builder = GenerateOutputsBuilder(
             env_id="test-env",

@@ -678,6 +678,17 @@ class GenerateOutputsBuilder:
             return str(getattr(client, "base_url"))
         return ""
 
+    def compute_api_client_type(
+        self, client: AsyncOpenAI | ClientConfig | object
+    ) -> str:
+        if isinstance(client, ClientConfig):
+            return client.client_type
+        config = getattr(client, "_config", None)
+        if isinstance(config, ClientConfig):
+            return config.client_type
+        client_type = getattr(client, "client_type", None)
+        return client_type if isinstance(client_type, str) else ""
+
     @staticmethod
     def tools_key(tools: list[Tool] | None) -> str:
         if not tools:
@@ -737,6 +748,7 @@ class GenerateOutputsBuilder:
             env_args=self.env_args,
             model=self.model,
             base_url=self.base_url,
+            api_client_type=self.compute_api_client_type(self.client),
             num_examples=self.num_examples,
             rollouts_per_example=self.rollouts_per_example,
             sampling_args=self.sampling_args,

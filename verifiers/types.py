@@ -1129,6 +1129,15 @@ def normalize_task_payload(value: object) -> dict[str, Any]:
     return dict(cast(Mapping[str, Any], value))
 
 
+def optional_task_payload(value: object) -> dict[str, Any] | None:
+    """Return a structured task payload, treating legacy string routes as absent."""
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip().startswith("{"):
+        return None
+    return normalize_task_payload(value)
+
+
 def task_payload_from_info(info: object) -> dict[str, Any] | None:
     """Return the canonical task payload from info.task if one is present."""
     if isinstance(info, str):
@@ -1138,7 +1147,7 @@ def task_payload_from_info(info: object) -> dict[str, Any] | None:
     task_payload = cast(Mapping[str, Any], info).get("task")
     if task_payload is None:
         return None
-    return normalize_task_payload(task_payload)
+    return optional_task_payload(task_payload)
 
 
 def flatten_task_input(input_data: Mapping[str, Any]) -> dict[str, Any]:
@@ -1148,7 +1157,10 @@ def flatten_task_input(input_data: Mapping[str, Any]) -> dict[str, Any]:
         return task_payload
     direct_task_payload = input_data.get("task")
     if direct_task_payload is not None:
-        return normalize_task_payload(direct_task_payload)
+        task_payload = optional_task_payload(direct_task_payload)
+        if task_payload is not None:
+            return task_payload
+        return {k: v for k, v in input_data.items() if k != "task"}
     return dict(input_data)
 
 
@@ -1173,6 +1185,7 @@ class GenerateMetadata(TypedDict):
     env_args: dict
     model: str
     base_url: str
+    api_client_type: NotRequired[str]
     num_examples: int
     rollouts_per_example: int
     sampling_args: SamplingArgs

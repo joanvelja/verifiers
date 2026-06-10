@@ -439,6 +439,30 @@ def test_cli_client_type_flag_overrides_env_default(monkeypatch, run_cli):
     )
 
 
+def test_cli_named_provider_client_type_overrides_env_default(monkeypatch, run_cli):
+    monkeypatch.setattr(
+        vf_eval,
+        "get_env_eval_defaults",
+        lambda _env_id: {"api_client_type": "renderer"},
+    )
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "claude-haiku-4-5",
+            "provider": "anthropic",
+            "api_client_type": None,
+            "api_key_var": None,
+            "api_base_url": None,
+        },
+        endpoints={},
+    )
+
+    config = captured["configs"][0]
+    assert config.client_config.client_type == "anthropic_messages"
+    assert config.client_config.api_key_var == "ANTHROPIC_API_KEY"
+    assert config.client_config.api_base_url == "https://api.anthropic.com"
+
+
 def test_cli_temperature_not_added_when_none(monkeypatch, run_cli):
     """Temperature flag with None is not added to sampling_args."""
     captured = run_cli(
