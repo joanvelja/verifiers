@@ -26,3 +26,10 @@ num_examples = 5
 rollouts_per_example = 3
 max_tokens = 1024
 temperature = 1.0
+
+[tool.uv]
+exclude-newer = "7 days"
+
+[tool.uv.exclude-newer-package]
+prime-pydantic-config = false
+renderers = false

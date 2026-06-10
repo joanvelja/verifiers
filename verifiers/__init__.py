@@ -48,6 +48,10 @@ from .utils.logging_utils import (
 
 TaskSplit: TypeAlias = Literal["train", "eval"]
 
+if TYPE_CHECKING:
+    from .envs.multi_agent_env import MultiAgentEnv
+    from .rubrics.multi_agent_rubric import MultiAgentRubric
+
 # Setup default logging configuration
 setup_logging(os.getenv("VF_LOG_LEVEL"))
 
@@ -73,6 +77,7 @@ __all__ = [
     "MaybeThinkParser",
     "XMLParser",
     "Rubric",
+    "MultiAgentRubric",
     "JudgeRubric",
     "RubricGroup",
     "MathRubric",
@@ -113,6 +118,7 @@ __all__ = [
     "VisibilityConfig",
     "SignalConfig",
     "Environment",
+    "MultiAgentEnv",
     "MultiTurnEnv",
     "SingleTurnEnv",
     "PythonEnv",
@@ -181,11 +187,13 @@ _LAZY_IMPORTS = {
         "verifiers.clients.openai_responses_client:OpenAIResponsesClient"
     ),
     "Environment": "verifiers.envs.environment:Environment",
+    "MultiAgentEnv": "verifiers.envs.multi_agent_env:MultiAgentEnv",
     "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
     "SingleTurnEnv": "verifiers.envs.singleturn_env:SingleTurnEnv",
     "StatefulToolEnv": "verifiers.envs.stateful_tool_env:StatefulToolEnv",
     "ToolEnv": "verifiers.envs.tool_env:ToolEnv",
     "EnvGroup": "verifiers.envs.env_group:EnvGroup",
+    "MultiAgentRubric": "verifiers.rubrics.multi_agent_rubric:MultiAgentRubric",
     "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
     "load_environment": "verifiers.utils.env_utils:load_environment",
     "load_harness": "verifiers.utils.env_utils:load_harness",

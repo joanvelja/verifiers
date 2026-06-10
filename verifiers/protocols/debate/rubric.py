@@ -169,10 +169,14 @@ def maybe_judge(
     return JudgeRubric(
         parser=Parser(),
         judge_client=client,
-        judge_model=model,
+        judge_model=tmpl.model or model,
         judge_system_prompt=tmpl.system,
         judge_prompt=tmpl.user,
-        judge_sampling_args=JUDGE_SAMPLING_ARGS,
+        judge_sampling_args=(
+            tmpl.sampling_args
+            if tmpl.sampling_args is not None
+            else dict(JUDGE_SAMPLING_ARGS)
+        ),
         judge_positive_label=tmpl.positive,
         judge_negative_label=tmpl.negative,
     )

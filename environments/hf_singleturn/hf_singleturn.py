@@ -9,6 +9,8 @@ from verifiers.utils.hf_tasks import (
     DEFAULT_JUDGE_PROMPT_PACK,
     JudgePromptKind,
     TaskType,
+    derive_train_eval_split,
+    infer_hf_eval_split,
     load_hf_dataset,
     make_rubric,
     normalize_hf_dataset,
@@ -82,6 +84,53 @@ def load_environment(
             choices_key = "choices"
             answer_format = "index"
 
+    inferred_eval_split_cache: list[str | None] = []
+    derived_train_eval_cache: dict[str, Dataset] = {}
+
+    def inferred_eval_split() -> str | None:
+        if eval_dataset_split is not None and eval_dataset_split != dataset_split:
+            return eval_dataset_split
+        if inferred_eval_split_cache:
+            return inferred_eval_split_cache[0]
+        split = infer_hf_eval_split(
+            dataset_name=dataset_name,
+            dataset_subset=dataset_subset,
+            dataset_split=dataset_split,
+            data_files=data_files,
+        )
+        inferred_eval_split_cache.append(split)
+        return split
+
+    def should_derive_eval_from_train() -> bool:
+        return (
+            eval_dataset is None
+            and resolved_dataset is None
+            and dataset_name is not None
+            and inferred_eval_split() is None
+        )
+
+    def derived_train_eval() -> dict[str, Dataset]:
+        if derived_train_eval_cache:
+            return derived_train_eval_cache
+        if dataset_name is None:
+            raise ValueError("dataset_name is required when dataset is not provided")
+        train_raw, eval_raw = derive_train_eval_split(
+            dataset_name=dataset_name,
+            dataset_subset=dataset_subset,
+            dataset_split=dataset_split,
+            data_files=data_files,
+            streaming=dataset_streaming,
+            columns=dataset_columns,
+            streaming_shuffle_buffer_size=dataset_streaming_shuffle_buffer_size,
+            seed=seed,
+            num_train_examples=num_train_examples,
+            num_eval_examples=num_eval_examples,
+            load_dataset_fn=load_hf_dataset,
+        )
+        derived_train_eval_cache["train"] = train_raw
+        derived_train_eval_cache["eval"] = eval_raw
+        return derived_train_eval_cache
+
     resolved_judge_prompt_pack = judge_prompt_pack
     if judge_prompt_pack == DEFAULT_JUDGE_PROMPT_PACK and prompts_ref is not None:
         resolved_judge_prompt_pack = (
@@ -137,6 +186,10 @@ def load_environment(
     def build_dataset() -> Dataset:
         if resolved_dataset is not None:
             raw = resolved_dataset
+            num_examples = num_train_examples
+        elif should_derive_eval_from_train():
+            raw = derived_train_eval()["train"]
+            num_examples = -1
         else:
             raw = _load_required_dataset(
                 dataset_name=dataset_name,
@@ -149,6 +202,7 @@ def load_environment(
                 streaming_shuffle_buffer_size=dataset_streaming_shuffle_buffer_size,
                 streaming_seed=seed,
             )
+            num_examples = num_train_examples
         return normalize_hf_dataset(
             raw,
             task_type=task_type,
@@ -168,19 +222,27 @@ def load_environment(
             prompt_phase=prompt_phase,
             shuffle_choices=shuffle_choices,
             seed=seed,
-            num_examples=num_train_examples,
+            num_examples=num_examples,
         )
 
     def build_eval_dataset() -> Dataset:
         if eval_dataset is not None:
             raw = eval_dataset
+            num_examples = num_eval_examples
         elif resolved_dataset is not None:
             raw = resolved_dataset
+            num_examples = num_eval_examples
+        elif should_derive_eval_from_train():
+            raw = derived_train_eval()["eval"]
+            num_examples = -1
         else:
+            eval_split = inferred_eval_split()
+            if eval_split is None:
+                raise ValueError("Internal error: no eval split or holdout available")
             raw = _load_required_dataset(
                 dataset_name=dataset_name,
                 dataset_subset=dataset_subset,
-                dataset_split=eval_dataset_split or dataset_split,
+                dataset_split=eval_split,
                 data_files=data_files,
                 streaming=dataset_streaming,
                 columns=dataset_columns,
@@ -188,6 +250,7 @@ def load_environment(
                 streaming_shuffle_buffer_size=dataset_streaming_shuffle_buffer_size,
                 streaming_seed=seed + 1,
             )
+            num_examples = num_eval_examples
         return normalize_hf_dataset(
             raw,
             task_type=task_type,
@@ -207,7 +270,7 @@ def load_environment(
             prompt_phase=prompt_phase,
             shuffle_choices=shuffle_choices,
             seed=seed + 1,
-            num_examples=num_eval_examples,
+            num_examples=num_examples,
         )
 
     return vf.SingleTurnEnv(

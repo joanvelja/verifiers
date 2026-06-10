@@ -203,6 +203,19 @@ class EnvGroup(vf.Environment):
         if len(self.env_names) != len(self.envs):
             raise ValueError("Number of env_names must match number of envs")
 
+        multi_agent_env_names = [
+            name
+            for name, env in zip(self.env_names, self.envs)
+            if getattr(env, "is_multi_agent", False)
+        ]
+        if multi_agent_env_names:
+            raise ValueError(
+                "EnvGroup does not support multi-agent sub-environments yet. "
+                "Routing MA environments through EnvGroup would drop member "
+                "generation plans and report is_multi_agent=False. Offending "
+                f"env(s): {multi_agent_env_names}"
+            )
+
         # create mapping for quick lookup
         self.env_map = {name: env for name, env in zip(self.env_names, self.envs)}
 

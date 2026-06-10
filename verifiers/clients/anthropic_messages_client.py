@@ -29,7 +29,11 @@ from anthropic.types import (
 )
 
 from verifiers.clients.client import Client
-from verifiers.errors import EmptyModelResponseError, OverlongPromptError
+from verifiers.errors import (
+    EmptyModelResponseError,
+    OverlongPromptError,
+    ReasoningOnlyEmptyResponseError,
+)
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -386,6 +390,7 @@ class AnthropicMessagesClient(
         has_text = False
         has_tool_call = False
         has_reasoning = False
+        reasoning_chunks: list[str] = []
         for content_block in getattr(response, "content", []) or []:
             block_type = getattr(content_block, "type", None)
             if block_type == "text" and getattr(content_block, "text", None):
@@ -394,11 +399,15 @@ class AnthropicMessagesClient(
                 has_tool_call = True
             elif block_type in {"thinking", "redacted_thinking"}:
                 has_reasoning = True
+                thinking_value = getattr(content_block, "thinking", None)
+                if isinstance(thinking_value, str):
+                    reasoning_chunks.append(thinking_value)
 
         if not (has_text or has_tool_call):
             if has_reasoning:
-                raise EmptyModelResponseError(
-                    "Model returned reasoning but no content and did not call any tools"
+                raise ReasoningOnlyEmptyResponseError(
+                    "Model returned reasoning but no content and did not call any tools",
+                    reasoning_content="\n".join(reasoning_chunks) or None,
                 )
             raise EmptyModelResponseError(
                 "Model returned no content and did not call any tools"

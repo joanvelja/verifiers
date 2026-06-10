@@ -8,9 +8,17 @@ Covers the reward-math primitives independently of pack / judge setup:
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import replace
+from typing import Any, cast
 
-from verifiers.protocols.debate.rubric import winning_member, zero_sum_reward
+from verifiers.clients import Client
+from verifiers.protocols.debate import resolve_prompts
+from verifiers.protocols.debate.rubric import (
+    DebateRubric,
+    winning_member,
+    zero_sum_reward,
+)
+from verifiers.utils.judge_prompts import JudgeTemplate
 
 
 def _step(member_id: str, **extras: Any) -> dict[str, Any]:
@@ -102,3 +110,48 @@ def test_winning_member_breaks_on_first_judge_without_decision() -> None:
 def test_winning_member_accepts_tie_decision() -> None:
     traj = [_step("judge", fields={"decision": "tie"})]
     assert winning_member(traj) == "tie"
+
+
+def test_pack_declared_judge_model_and_sampling_override_env_defaults() -> None:
+    prompts = resolve_prompts("selfplay_oe")
+    prompts = replace(
+        prompts,
+        judges={
+            "grader": JudgeTemplate(
+                system="grade",
+                user="Target: {answer}\nResponse: {response}",
+                positive="CORRECT",
+                negative="INCORRECT",
+                model="pack-grader-model",
+                sampling_args={"temperature": 0.0, "max_tokens": 17},
+            ),
+            "matcher": JudgeTemplate(
+                system="match",
+                user="A: {answer}\nB: {response}",
+                positive="SAME",
+                negative="DIFFERENT",
+                model="pack-matcher-model",
+                sampling_args={"temperature": 0.2, "max_tokens": 23},
+            ),
+        },
+    )
+
+    rubric = DebateRubric(
+        members=["debater_a", "debater_b", "judge"],
+        prompts=prompts,
+        judge_client=cast(Client, object()),
+        judge_model="env-default-model",
+    )
+
+    assert rubric.grader is not None
+    assert rubric.grader.judge_model == "pack-grader-model"
+    assert rubric.grader.judge_sampling_args == {
+        "temperature": 0.0,
+        "max_tokens": 17,
+    }
+    assert rubric.matcher is not None
+    assert rubric.matcher.judge_model == "pack-matcher-model"
+    assert rubric.matcher.judge_sampling_args == {
+        "temperature": 0.2,
+        "max_tokens": 23,
+    }

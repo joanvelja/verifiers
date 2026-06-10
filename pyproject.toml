@@ -148,6 +148,10 @@ conflicts = [
     ],
     [
         { extra = "nemogym" },
+        { group = "policy" },
+    ],
+    [
+        { extra = "nemogym" },
         { group = "dev" },
     ],
     [

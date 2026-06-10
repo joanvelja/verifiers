@@ -32,10 +32,12 @@ from verifiers.protocols.debate.env import DebateEnv
 from verifiers.protocols.debate.env import load_environment as load_debate_environment
 from verifiers.protocols.debate.fields import EnumScoring
 from verifiers.protocols.debate.prompts import resolve_prompts
-from verifiers.types import ClientConfig
+from verifiers.types import ClientConfig, SamplingArgs
 from verifiers.utils.hf_tasks import (
     AnswerFormat,
     TaskType,
+    derive_train_eval_split,
+    infer_hf_eval_split,
     load_hf_dataset,
     normalize_hf_dataset,
 )
@@ -56,7 +58,6 @@ def load_hf_debate_environment(
     dataset_streaming: bool = False,
     dataset_columns: Sequence[str] | None = None,
     dataset_streaming_shuffle_buffer_size: int | None = None,
-    allow_eval_train_split_fallback: bool = False,
     dataset: Dataset | None = None,
     eval_dataset: Dataset | None = None,
     task_type: TaskType = "mcq",
@@ -82,7 +83,15 @@ def load_hf_debate_environment(
     judge_client: Client | None = None,
     judge_base_url: str = "https://api.openai.com/v1",
     judge_api_key_var: str = "OPENAI_API_KEY",
-    **extra: object,
+    timeout_seconds: float | None = None,
+    sampling_args: SamplingArgs | None = None,
+    max_workers: int = 512,
+    env_id: str | None = None,
+    env_args: dict | None = None,
+    map_kwargs: dict | None = None,
+    max_seq_len: int | None = None,
+    score_rollouts: bool = True,
+    pass_threshold: float = 0.5,
 ) -> DebateEnv:
     if system_prompt is not None:
         raise ValueError(
@@ -90,9 +99,17 @@ def load_hf_debate_environment(
             "role system prompts in the selected prompt pack instead."
         )
 
-    resolved_prompts_ref = prompts_ref or (
-        "selfplay" if task_type == "mcq" else "default"
-    )
+    if prompts_ref is None:
+        if task_type != "mcq":
+            raise ValueError(
+                "prompts_ref is required for non-MCQ debate tasks. The old "
+                "implicit 'default' prompt pack is intentionally not used as a "
+                "fallback because it does not define debater answer/instruction "
+                "contracts for open-ended scoring."
+            )
+        resolved_prompts_ref = "selfplay"
+    else:
+        resolved_prompts_ref = prompts_ref
 
     # Free-form (non-enum) debater answers can't be scored by MCQ exact-match, so
     # they route to the LLM grader, which needs a client. Enum/MCQ packs short-
@@ -113,9 +130,60 @@ def load_hf_debate_environment(
             choices_key = "choices"
             answer_format = "index"
 
+    inferred_eval_split_cache: list[str | None] = []
+    derived_train_eval_cache: dict[str, Dataset] = {}
+
+    def inferred_eval_split() -> str | None:
+        if eval_dataset_split is not None and eval_dataset_split != dataset_split:
+            return eval_dataset_split
+        if inferred_eval_split_cache:
+            return inferred_eval_split_cache[0]
+        split = infer_hf_eval_split(
+            dataset_name=dataset_name,
+            dataset_subset=dataset_subset,
+            dataset_split=dataset_split,
+            data_files=data_files,
+        )
+        inferred_eval_split_cache.append(split)
+        return split
+
+    def should_derive_eval_from_train() -> bool:
+        return (
+            eval_dataset is None
+            and resolved_dataset is None
+            and dataset_name is not None
+            and inferred_eval_split() is None
+        )
+
+    def derived_train_eval() -> dict[str, Dataset]:
+        if derived_train_eval_cache:
+            return derived_train_eval_cache
+        if dataset_name is None:
+            raise ValueError("dataset_name is required when dataset is not provided")
+        train_raw, eval_raw = derive_train_eval_split(
+            dataset_name=dataset_name,
+            dataset_subset=dataset_subset,
+            dataset_split=dataset_split,
+            data_files=data_files,
+            streaming=dataset_streaming,
+            columns=dataset_columns,
+            streaming_shuffle_buffer_size=dataset_streaming_shuffle_buffer_size,
+            seed=seed,
+            num_train_examples=num_train_examples,
+            num_eval_examples=num_eval_examples,
+            load_dataset_fn=load_hf_dataset,
+        )
+        derived_train_eval_cache["train"] = train_raw
+        derived_train_eval_cache["eval"] = eval_raw
+        return derived_train_eval_cache
+
     def build_dataset() -> Dataset:
         if resolved_dataset is not None:
             raw = resolved_dataset
+            num_examples = num_train_examples
+        elif should_derive_eval_from_train():
+            raw = derived_train_eval()["train"]
+            num_examples = -1
         else:
             raw = _load_required_dataset(
                 dataset_name=dataset_name,
@@ -128,6 +196,7 @@ def load_hf_debate_environment(
                 streaming_shuffle_buffer_size=dataset_streaming_shuffle_buffer_size,
                 streaming_seed=seed,
             )
+            num_examples = num_train_examples
         normalized = normalize_hf_dataset(
             raw,
             task_type=task_type,
@@ -144,7 +213,7 @@ def load_hf_debate_environment(
             system_prompt=system_prompt,
             shuffle_choices=shuffle_choices,
             seed=seed,
-            num_examples=num_train_examples,
+            num_examples=num_examples,
         )
         if task_type == "mcq":
             _validate_mcq_labels_for_prompt_pack(normalized, resolved_prompts_ref)
@@ -153,24 +222,21 @@ def load_hf_debate_environment(
     def build_eval_dataset() -> Dataset:
         if eval_dataset is not None:
             raw = eval_dataset
+            num_examples = num_eval_examples
         elif resolved_dataset is not None:
             raw = resolved_dataset
+            num_examples = num_eval_examples
+        elif should_derive_eval_from_train():
+            raw = derived_train_eval()["eval"]
+            num_examples = -1
         else:
-            if (
-                eval_dataset_split is None
-                and dataset_split == "train"
-                and not allow_eval_train_split_fallback
-            ):
-                raise ValueError(
-                    "eval_dataset_split is required for named HF datasets when "
-                    "dataset_split='train'. Pass eval_dataset, set "
-                    "eval_dataset_split, or set allow_eval_train_split_fallback=True "
-                    "to intentionally evaluate on the training split."
-                )
+            eval_split = inferred_eval_split()
+            if eval_split is None:
+                raise ValueError("Internal error: no eval split or holdout available")
             raw = _load_required_dataset(
                 dataset_name=dataset_name,
                 dataset_subset=dataset_subset,
-                dataset_split=eval_dataset_split or dataset_split,
+                dataset_split=eval_split,
                 data_files=data_files,
                 streaming=dataset_streaming,
                 columns=dataset_columns,
@@ -178,6 +244,7 @@ def load_hf_debate_environment(
                 streaming_shuffle_buffer_size=dataset_streaming_shuffle_buffer_size,
                 streaming_seed=seed + 1,
             )
+            num_examples = num_eval_examples
         normalized = normalize_hf_dataset(
             raw,
             task_type=task_type,
@@ -194,7 +261,7 @@ def load_hf_debate_environment(
             system_prompt=system_prompt,
             shuffle_choices=shuffle_choices,
             seed=seed + 1,
-            num_examples=num_eval_examples,
+            num_examples=num_examples,
         )
         if task_type == "mcq":
             _validate_mcq_labels_for_prompt_pack(normalized, resolved_prompts_ref)
@@ -209,7 +276,15 @@ def load_hf_debate_environment(
         judge_model=judge_model,
         dataset=build_dataset,
         eval_dataset=build_eval_dataset,
-        **extra,
+        timeout_seconds=timeout_seconds,
+        sampling_args=sampling_args,
+        max_workers=max_workers,
+        env_id=env_id,
+        env_args=env_args,
+        map_kwargs=map_kwargs,
+        max_seq_len=max_seq_len,
+        score_rollouts=score_rollouts,
+        pass_threshold=pass_threshold,
     )
 
 

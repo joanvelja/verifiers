@@ -2,12 +2,18 @@ import json
 import random
 import re
 import string
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, cast
 
 import fsspec
 import pyarrow.parquet as pq
-from datasets import Dataset, DatasetDict, IterableDataset, load_dataset
+from datasets import (
+    Dataset,
+    DatasetDict,
+    IterableDataset,
+    get_dataset_split_names,
+    load_dataset,
+)
 
 import verifiers as vf
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
@@ -25,6 +31,8 @@ JudgePromptKind = Literal["grader", "matcher"]
 
 LETTERS = tuple(string.ascii_uppercase)
 DEFAULT_JUDGE_PROMPT_PACK = "default"
+DEFAULT_EVAL_SPLIT_CANDIDATES = ("test", "validation", "eval", "dev")
+DEFAULT_DERIVED_EVAL_FRACTION = 0.2
 
 MCQ_INSTRUCTION = (
     "Think step by step, then put your final answer letter inside "
@@ -87,6 +95,130 @@ def load_hf_dataset(
             buffer_size=streaming_shuffle_buffer_size,
         )
     return loaded
+
+
+def infer_hf_eval_split(
+    *,
+    dataset_name: str | None,
+    dataset_subset: str | None,
+    dataset_split: str,
+    data_files: str | list[str] | dict[str, str | list[str]] | None,
+) -> str | None:
+    """Return the preferred held-out split for a named dataset, if one exists."""
+    if isinstance(data_files, dict):
+        split_names = list(data_files)
+    elif dataset_name is None:
+        return None
+    else:
+        try:
+            if dataset_subset is None:
+                split_names = list(get_dataset_split_names(dataset_name))
+            else:
+                split_names = list(
+                    get_dataset_split_names(dataset_name, dataset_subset)
+                )
+        except Exception:
+            return None
+
+    for candidate in DEFAULT_EVAL_SPLIT_CANDIDATES:
+        if candidate != dataset_split and candidate in split_names:
+            return candidate
+    return None
+
+
+def derive_train_eval_split(
+    *,
+    dataset_name: str,
+    dataset_subset: str | None,
+    dataset_split: str,
+    data_files: str | list[str] | dict[str, str | list[str]] | None,
+    streaming: bool,
+    columns: Sequence[str] | None,
+    streaming_shuffle_buffer_size: int | None,
+    seed: int,
+    num_train_examples: int,
+    num_eval_examples: int,
+    load_dataset_fn: Callable[..., Dataset | IterableDataset] = load_hf_dataset,
+) -> tuple[Dataset, Dataset]:
+    """Load one source split and return deterministic disjoint train/eval subsets."""
+    streaming_limit = -1
+    if streaming:
+        streaming_limit = _streaming_holdout_limit(
+            num_train_examples=num_train_examples,
+            num_eval_examples=num_eval_examples,
+        )
+    raw = load_dataset_fn(
+        dataset_name,
+        dataset_subset=dataset_subset,
+        dataset_split=dataset_split,
+        data_files=data_files,
+        streaming=streaming,
+        columns=columns,
+        streaming_limit=streaming_limit,
+        streaming_shuffle_buffer_size=streaming_shuffle_buffer_size,
+        streaming_seed=seed,
+    )
+    if isinstance(raw, IterableDataset):
+        raw = _materialize_streaming_holdout_source(raw, streaming_limit)
+    return split_train_for_eval(
+        raw,
+        seed=seed + 1,
+        num_train_examples=num_train_examples,
+        num_eval_examples=num_eval_examples,
+    )
+
+
+def split_train_for_eval(
+    dataset: Dataset,
+    *,
+    seed: int,
+    num_train_examples: int,
+    num_eval_examples: int,
+) -> tuple[Dataset, Dataset]:
+    """Shuffle once, reserve eval first, then train from the remaining rows."""
+    num_rows = len(dataset)
+    if num_rows == 0:
+        return dataset, dataset
+
+    shuffled = dataset.shuffle(seed=seed)
+    if num_eval_examples >= 0:
+        eval_count = min(num_eval_examples, num_rows)
+    elif num_rows == 1:
+        eval_count = 1
+    else:
+        eval_count = max(
+            1,
+            min(num_rows - 1, round(num_rows * DEFAULT_DERIVED_EVAL_FRACTION)),
+        )
+
+    eval_raw = shuffled.select(range(eval_count))
+    remaining_count = num_rows - eval_count
+    if num_train_examples >= 0:
+        train_count = min(num_train_examples, remaining_count)
+    else:
+        train_count = remaining_count
+    train_raw = shuffled.select(range(eval_count, eval_count + train_count))
+    return train_raw, eval_raw
+
+
+def _streaming_holdout_limit(*, num_train_examples: int, num_eval_examples: int) -> int:
+    if num_train_examples < 0 or num_eval_examples < 0:
+        raise ValueError(
+            "num_train_examples and num_eval_examples must be set when deriving "
+            "a train/eval holdout from a streaming dataset."
+        )
+    return num_train_examples + num_eval_examples
+
+
+def _materialize_streaming_holdout_source(
+    dataset: IterableDataset,
+    limit: int,
+) -> Dataset:
+    rows = list(dataset.take(limit))
+    features = getattr(dataset, "features", None)
+    if features is not None:
+        return Dataset.from_list(rows, features=features)
+    return Dataset.from_list(rows)
 
 
 def _load_streaming_parquet_dataset(

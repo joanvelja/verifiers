@@ -11,10 +11,13 @@ from datasets import ClassLabel, Dataset, Features, Sequence as HFSequence, Valu
 
 import verifiers as vf
 from environments.hf_debate.hf_debate import load_environment as load_hf_debate
+from environments.hf_singleturn import hf_singleturn as singleturn_hf
 from environments.hf_singleturn.hf_singleturn import (
     load_environment as load_hf_singleturn,
 )
 from verifiers.envs.multi_agent_kernel import KernelState
+from verifiers.protocols.debate import hf as debate_hf
+from verifiers.utils import hf_tasks
 from verifiers.utils.hf_tasks import (
     MultipleChoiceRubric,
     extract_final_answer,
@@ -716,16 +719,172 @@ def test_hf_debate_accepts_in_memory_mcq_dataset() -> None:
     assert env.members == ["debater_a", "debater_b", "judge"]
 
 
-def test_hf_debate_named_dataset_requires_eval_split() -> None:
+def test_hf_debate_non_mcq_requires_explicit_prompt_pack() -> None:
+    raw = Dataset.from_list([{"question": "What is 2+2?", "answer": "4"}])
+
+    with pytest.raises(ValueError, match="prompts_ref"):
+        load_hf_debate(dataset=raw, task_type="open_ended")
+
+
+def test_hf_debate_named_dataset_uses_default_eval_split(monkeypatch) -> None:
+    train_raw = Dataset.from_list(
+        [
+            {"question": "train 0?", "choices": ["a", "b"], "answer": 0, "id": "tr0"},
+        ]
+    )
+    validation_raw = Dataset.from_list(
+        [
+            {"question": "eval 0?", "choices": ["a", "b"], "answer": 1, "id": "ev0"},
+        ]
+    )
+
+    monkeypatch.setattr(
+        hf_tasks,
+        "get_dataset_split_names",
+        lambda *args, **kwargs: ["train", "validation"],
+    )
+
+    def fake_load_hf_dataset(*args, dataset_split: str, **kwargs) -> Dataset:
+        return {"train": train_raw, "validation": validation_raw}[dataset_split]
+
+    monkeypatch.setattr(debate_hf, "load_hf_dataset", fake_load_hf_dataset)
+
     env = load_hf_debate(
         dataset_name="test/dataset",
         task_type="mcq",
         choices_key="choices",
         answer_format="index",
+        example_id_key="id",
     )
 
-    with pytest.raises(ValueError, match="eval_dataset_split"):
-        env.get_eval_dataset()
+    assert env.get_dataset()[0]["src_id"] == "tr0"
+    assert env.get_eval_dataset()[0]["src_id"] == "ev0"
+
+
+def test_hf_singleturn_named_dataset_uses_default_eval_split(monkeypatch) -> None:
+    train_raw = Dataset.from_list(
+        [
+            {"question": "train 0?", "choices": ["a", "b"], "answer": 0, "id": "tr0"},
+        ]
+    )
+    test_raw = Dataset.from_list(
+        [
+            {"question": "eval 0?", "choices": ["a", "b"], "answer": 1, "id": "ev0"},
+        ]
+    )
+
+    monkeypatch.setattr(
+        hf_tasks,
+        "get_dataset_split_names",
+        lambda *args, **kwargs: ["train", "test"],
+    )
+
+    def fake_load_hf_dataset(*args, dataset_split: str, **kwargs) -> Dataset:
+        return {"train": train_raw, "test": test_raw}[dataset_split]
+
+    monkeypatch.setattr(singleturn_hf, "load_hf_dataset", fake_load_hf_dataset)
+
+    env = load_hf_singleturn(
+        dataset_name="test/dataset",
+        task_type="mcq",
+        choices_key="choices",
+        answer_format="index",
+        example_id_key="id",
+    )
+
+    assert env.get_dataset()[0]["src_id"] == "tr0"
+    assert env.get_eval_dataset()[0]["src_id"] == "ev0"
+
+
+def test_hf_debate_named_dataset_without_eval_split_derives_disjoint_holdout(
+    monkeypatch,
+) -> None:
+    raw = Dataset.from_list(
+        [
+            {
+                "question": f"row {idx}?",
+                "choices": ["a", "b"],
+                "answer": idx % 2,
+                "id": f"row-{idx}",
+            }
+            for idx in range(10)
+        ]
+    )
+
+    monkeypatch.setattr(
+        hf_tasks,
+        "get_dataset_split_names",
+        lambda *args, **kwargs: ["train"],
+    )
+    monkeypatch.setattr(
+        debate_hf,
+        "load_hf_dataset",
+        lambda *args, dataset_split, **kwargs: raw,
+    )
+
+    env = load_hf_debate(
+        dataset_name="test/dataset",
+        task_type="mcq",
+        choices_key="choices",
+        answer_format="index",
+        example_id_key="id",
+        eval_dataset_split="train",
+        num_train_examples=4,
+        num_eval_examples=3,
+        seed=123,
+    )
+
+    train_ids = {row["src_id"] for row in env.get_dataset()}
+    eval_ids = {row["src_id"] for row in env.get_eval_dataset()}
+
+    assert len(train_ids) == 4
+    assert len(eval_ids) == 3
+    assert train_ids.isdisjoint(eval_ids)
+
+
+def test_hf_singleturn_named_dataset_without_eval_split_derives_disjoint_holdout(
+    monkeypatch,
+) -> None:
+    raw = Dataset.from_list(
+        [
+            {
+                "question": f"row {idx}?",
+                "choices": ["a", "b"],
+                "answer": idx % 2,
+                "id": f"row-{idx}",
+            }
+            for idx in range(10)
+        ]
+    )
+
+    monkeypatch.setattr(
+        hf_tasks,
+        "get_dataset_split_names",
+        lambda *args, **kwargs: ["train"],
+    )
+    monkeypatch.setattr(
+        singleturn_hf,
+        "load_hf_dataset",
+        lambda *args, dataset_split, **kwargs: raw,
+    )
+
+    env = load_hf_singleturn(
+        dataset_name="test/dataset",
+        task_type="mcq",
+        choices_key="choices",
+        answer_format="index",
+        example_id_key="id",
+        num_train_examples=4,
+        num_eval_examples=3,
+        seed=123,
+    )
+
+    train_ids = {row["src_id"] for row in env.get_dataset()}
+    eval_ids = {row["src_id"] for row in env.get_eval_dataset()}
+
+    assert len(train_ids) == 4
+    assert len(eval_ids) == 3
+    assert train_ids.isdisjoint(eval_ids)
 
 
 def test_hf_debate_rejects_mcq_labels_not_supported_by_prompt_pack() -> None:
@@ -787,7 +946,7 @@ def test_hf_debate_matcher_accepts_prompt_pack_verdict_labels(mock_client) -> No
     env = load_hf_debate(
         dataset=raw,
         task_type="open_ended",
-        prompts_ref="default",
+        prompts_ref="selfplay_oe",
         judge_client=mock_client,
     )
 
