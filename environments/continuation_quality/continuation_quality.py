@@ -41,7 +41,10 @@ def load_environment(
         return dataset
 
     judge_client = OpenAIChatCompletionsClient(
-        AsyncOpenAI(base_url=judge_base_url, api_key=os.getenv(judge_api_key_var, ""))
+        AsyncOpenAI(
+            base_url=judge_base_url,
+            api_key=os.getenv(judge_api_key_var) or "EMPTY",
+        )
     )
     judge_prompt = """Evaluate this base model continuation from a prefix, compared to the true continuation from Wikipedia.
 

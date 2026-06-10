@@ -79,7 +79,10 @@ Respond in the following format:
 
     parser = vf.Parser()
     judge_client = OpenAIChatCompletionsClient(
-        AsyncOpenAI(api_key=os.getenv(judge_api_key_var, ""), base_url=judge_base_url)
+        AsyncOpenAI(
+            api_key=os.getenv(judge_api_key_var) or "EMPTY",
+            base_url=judge_base_url,
+        )
     )
 
     judge_prompt = """Evaluate this toxicity classification task.
