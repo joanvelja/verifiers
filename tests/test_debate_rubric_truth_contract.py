@@ -63,6 +63,19 @@ class _FailingDiagnosticRubric(DebateRubric):
         raise vf.Error(f"{kind} diagnostic failed")
 
 
+class _ExactDiagnosticRubric(DebateRubric):
+    async def verdict(
+        self,
+        answer: str,
+        target: str,
+        question: str,
+        spec: FieldSpec | None,
+        kind: str,
+        state: State,
+    ) -> bool:
+        return str(answer) == str(target)
+
+
 @pytest.mark.asyncio
 async def test_symmetric_debate_has_inert_episode_scalar_and_diagnostic_truth() -> None:
     score = await _rubric().build_marscore(
@@ -72,6 +85,8 @@ async def test_symmetric_debate_has_inert_episode_scalar_and_diagnostic_truth() 
     rewards = {m.member_id: m.reward for m in score.members}
     assert rewards == {"debater_a": -1.0, "debater_b": 1.0, "judge": 0.0}
     assert score.episode_scalar == 0.0
+    assert score.episode_metrics["any_answer_member_correct"] == 1.0
+    assert score.episode_metrics["all_answer_members_correct"] == 0.0
     assert score.episode_metrics["any_debater_correct"] == 1.0
     assert score.episode_metrics["all_debaters_correct"] == 0.0
     assert score.episode_metrics["judge_selected_correct"] == 1.0
@@ -115,3 +130,62 @@ async def test_diagnostic_failures_do_not_override_judge_reward() -> None:
     assert score.episode_metrics["matcher_error"] == 1.0
     assert "agreement" not in score.episode_metrics
     assert "judge_selected_correct" not in score.episode_metrics
+
+
+@pytest.mark.asyncio
+async def test_answerless_critic_is_not_counted_as_wrong_or_all_debaters_correct() -> (
+    None
+):
+    rubric = _ExactDiagnosticRubric(
+        members=["debater_a", "debater_b", "judge"],
+        prompts=resolve_prompts("selfplay_oe_pcd4_final"),
+    )
+
+    score = await rubric.build_marscore(
+        {
+            "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+            "answer": "4",
+            "trajectory": [
+                {
+                    "completion": [{"role": "assistant", "content": "4"}],
+                    "extras": {
+                        "member_id": "debater_a",
+                        "phase": "final",
+                        "fields": {"answer": "4"},
+                    },
+                },
+                {
+                    "completion": [{"role": "assistant", "content": "reject"}],
+                    "extras": {
+                        "member_id": "debater_b",
+                        "phase": "final",
+                        "fields": {
+                            "remaining_critique": "the proposal is unsupported",
+                            "status": "reject",
+                        },
+                    },
+                },
+                {
+                    "completion": [{"role": "assistant", "content": "debater_b"}],
+                    "extras": {
+                        "member_id": "judge",
+                        "phase": "final",
+                        "fields": {"decision": "debater_b"},
+                    },
+                },
+            ],
+        }
+    )
+
+    member_metrics = {m.member_id: m.metrics for m in score.members}
+    assert member_metrics["debater_a"]["final_correct"] == 1.0
+    assert "accuracy" not in member_metrics["debater_b"]
+    assert "final_correct" not in member_metrics["debater_b"]
+    assert "extraction_failed" not in member_metrics["debater_b"]
+
+    assert score.episode_metrics["any_answer_member_correct"] == 1.0
+    assert score.episode_metrics["all_answer_members_correct"] == 1.0
+    assert "any_debater_correct" not in score.episode_metrics
+    assert "all_debaters_correct" not in score.episode_metrics
+    assert "judge_selected_correct" not in score.episode_metrics
+    assert "final_answer/debater_b" not in score.episode_categorical

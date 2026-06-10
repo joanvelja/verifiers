@@ -13,7 +13,8 @@ Diagnostics (weight-0 telemetry; never feed reward):
     per-member: turns, parse_error_count, num_commits, num_unique_commits,
                 accuracy, extraction_failed, initial_correct, final_correct,
                 grader_error
-    episode:    agreement, any_debater_correct, all_debaters_correct,
+    episode:    agreement, any_answer_member_correct, all_answer_members_correct,
+                any_debater_correct, all_debaters_correct,
                 judge_selected_correct, truth_member_correct, truth_member_won,
                 winner, matcher_error
 """
@@ -350,11 +351,15 @@ class DebateRubric(MultiAgentRubric):
           * ``agreement``: matcher verdict on the two debaters' final
             answers; present only when both have committed.
           * correctness metrics: diagnostic-only ground-truth telemetry.
-            They never feed member rewards. ``truth_member_*`` metrics are
-            present only when the pack explicitly declares a truth side.
+            They never feed member rewards. ``*_answer_member_correct``
+            aggregates only members whose pack role declares an answer field;
+            legacy ``*_debater_correct`` aliases are emitted only when every
+            non-judge debater declares an answer. ``truth_member_*`` metrics
+            are present only when the pack explicitly declares a truth side.
           * diagnostic judge failures set ``grader_error``/``matcher_error``
             instead of invalidating judge-derived member rewards.
         """
+
         async def diagnostic_verdict(
             answer: str,
             target: str,
@@ -452,15 +457,22 @@ class DebateRubric(MultiAgentRubric):
             if seq[0] == seq[-1] and "final_correct" in dst:
                 dst["initial_correct"] = dst["final_correct"]
 
-        if answer_members and all(mid in final_correct_by_member for mid in answer_members):
+        if answer_members and all(
+            mid in final_correct_by_member for mid in answer_members
+        ):
             correctness = [
                 final_correct_by_member.get(mid, 0.0) for mid in answer_members
             ]
             any_correct = any(value == 1.0 for value in correctness)
-            episode["any_debater_correct"] = float(any_correct)
-            episode["all_debaters_correct"] = float(
+            all_correct = float(
                 bool(correctness) and all(value == 1.0 for value in correctness)
             )
+            episode["any_answer_member_correct"] = float(any_correct)
+            episode["all_answer_members_correct"] = all_correct
+            debater_members = {mid for mid in self.members if mid != "judge"}
+            if set(answer_members) == debater_members:
+                episode["any_debater_correct"] = float(any_correct)
+                episode["all_debaters_correct"] = all_correct
             if winner in answer_members:
                 selected_correct = final_correct_by_member.get(winner, 0.0)
                 episode["judge_selected_correct"] = selected_correct
