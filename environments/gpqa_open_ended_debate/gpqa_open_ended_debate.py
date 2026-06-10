@@ -23,7 +23,6 @@ def load_environment(
     return load_hf_debate_environment(
         dataset_name="joanvelja/gpqa-open-ended",
         dataset_subset=subset,
-        eval_dataset_split="train",
         task_type="open_ended",
         question_key="question",
         answer_key="answer",
