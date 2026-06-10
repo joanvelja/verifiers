@@ -350,7 +350,7 @@ class DebateEnv(MultiAgentEnv):
         ``[instruction_that_preceded_it, assistant(public + reasoning_content)]``
         -- i.e. we re-render the instruction for that turn's phase/round_index.
         Opponent turns are rendered as wrapped user messages. The current
-        turn's instruction + optional assistant-prefill sit at the tail.
+        turn's instruction sits at the tail.
 
         The base class folds consecutive user messages (question + opponent +
         instruction) into one block before the renderer — required so the
@@ -560,16 +560,13 @@ class DebateEnv(MultiAgentEnv):
     def _render_current_suffix(
         self, member_id: str, slot: TurnSlot, ctx_current: dict[str, Any]
     ) -> list[Message]:
-        """Render the tail of the prompt: current instruction + optional prefill."""
+        """Render the tail of the prompt: current instruction."""
         msgs: list[Message] = []
         instruction = self.prompts.render_instruction(
             member_id, slot.phase, ctx_current
         )
         if instruction:
             msgs.append(UserMessage(content=instruction))
-        prefill = self.prompts.render_prefill(member_id, slot.phase, ctx_current)
-        if prefill:
-            msgs.append(AssistantMessage(content=prefill))
         return msgs
 
     # -- field extraction ----------------------------------------------------

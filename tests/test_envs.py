@@ -13,6 +13,14 @@ IMPORT_TIMEOUT = 120  # 2 minutes for importing a package
 LOAD_TIMEOUT = 300  # 5 minutes for loading an environment (may download datasets)
 EVAL_TIMEOUT = 600  # 10 minutes for running vf-eval with -n 1 -r 1
 PRIME_PYDANTIC_CONFIG_CUTOFF = "2026-06-03T00:00:00Z"
+DEFAULT_EVAL_CLIENT_TYPE = "openai_chat_completions"
+RENDERER_CLIENT_TYPE = "renderer"
+PRIME_API_EVAL_ENVS = {
+    # Default eval starts a Prime sandbox; OpenAI-only model credentials are not
+    # enough to execute a rollout.
+    "math_python",
+    "tau2_bench_v1",
+}
 
 SKIPPED_ENVS = [
     # Requires fix for completion dataset setup
@@ -60,6 +68,28 @@ def get_environments() -> list[Path]:
             all_envs = [env for env in all_envs if env.name in changed_list]
 
     return all_envs
+
+
+def get_eval_config(env_dir: Path) -> dict:
+    """Read an environment's [tool.verifiers.eval] config from pyproject.toml."""
+    with open(env_dir / "pyproject.toml", "rb") as f:
+        pyproject = tomllib.load(f)
+    config = pyproject.get("tool", {}).get("verifiers", {}).get("eval", {})
+    return config if isinstance(config, dict) else {}
+
+
+def get_eval_smoke_client_type(env_dir: Path) -> str:
+    """Client type for the generic live eval smoke.
+
+    Renderer defaults require a tokenized generation backend, not the generic
+    provider-rendered OpenAI/Prime smoke endpoint used here. Keep that existing
+    smoke lane on chat completions while honoring other API-level defaults such
+    as multimodal Responses.
+    """
+    client_type = get_eval_config(env_dir).get("api_client_type")
+    if isinstance(client_type, str) and client_type != RENDERER_CLIENT_TYPE:
+        return client_type
+    return DEFAULT_EVAL_CLIENT_TYPE
 
 
 @pytest.mark.parametrize("env_dir", get_environments(), ids=lambda x: x.name)
@@ -123,6 +153,28 @@ def test_alphabet_sort_v1_validates_parameters():
                 max_names_per_turn=2,
             )
         )
+
+
+def test_eval_smoke_client_type_uses_api_level_env_default(tmp_path: Path):
+    env_dir = tmp_path / "fake_multimodal_env"
+    env_dir.mkdir()
+    (env_dir / "pyproject.toml").write_text(
+        '[tool.verifiers.eval]\napi_client_type = "openai_responses"\n',
+        encoding="utf-8",
+    )
+
+    assert get_eval_smoke_client_type(env_dir) == "openai_responses"
+
+
+def test_eval_smoke_client_type_keeps_renderer_envs_on_generic_chat(tmp_path: Path):
+    env_dir = tmp_path / "fake_renderer_env"
+    env_dir.mkdir()
+    (env_dir / "pyproject.toml").write_text(
+        '[tool.verifiers.eval]\napi_client_type = "renderer"\n',
+        encoding="utf-8",
+    )
+
+    assert get_eval_smoke_client_type(env_dir) == DEFAULT_EVAL_CLIENT_TYPE
 
 
 @pytest.mark.parametrize("env_name", ["alphabet_sort", "math_python"])
@@ -223,21 +275,31 @@ def help_test_can_load_env(tmp_venv_dir: Path, env_dir: Path):
 
 def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
     """Test that the environment can be run via vf-eval."""
-    if env_dir.name == "tau2_bench_v1" and not os.getenv("PRIME_API_KEY"):
+    if env_dir.name in PRIME_API_EVAL_ENVS and not os.getenv("PRIME_API_KEY"):
         pytest.skip(
-            "Skipping tau2 default eval because PRIME_API_KEY is not configured"
+            f"Skipping {env_dir.name} default eval because PRIME_API_KEY is not configured"
         )
     if env_dir.name == "gpqa_debate" and not os.getenv("HF_TOKEN"):
         pytest.skip("Skipping gpqa_debate eval because HF_TOKEN is not configured")
-    if os.getenv("PRIME_API_KEY"):
+    client_type = get_eval_smoke_client_type(env_dir)
+    if client_type == "openai_responses":
+        if not os.getenv("OPENAI_API_KEY"):
+            pytest.skip(
+                f"Skipping {env_dir.name} eval because OPENAI_API_KEY is not configured"
+            )
+        model_flags = (
+            "-m gpt-4.1-mini -b https://api.openai.com/v1 "
+            f"-k OPENAI_API_KEY --api-client-type {client_type}"
+        )
+    elif os.getenv("PRIME_API_KEY"):
         model_flags = (
             "-m openai/gpt-4.1-mini -b https://api.pinference.ai/api/v1 "
-            "-k PRIME_API_KEY --api-client-type openai_chat_completions"
+            f"-k PRIME_API_KEY --api-client-type {client_type}"
         )
     elif os.getenv("OPENAI_API_KEY"):
         model_flags = (
             "-m gpt-4.1-mini -b https://api.openai.com/v1 "
-            "-k OPENAI_API_KEY --api-client-type openai_chat_completions"
+            f"-k OPENAI_API_KEY --api-client-type {client_type}"
         )
     else:
         pytest.skip("Skipping vf-eval smoke test because no API key is configured")

@@ -23,7 +23,7 @@ import jinja2.sandbox
 import pytest
 
 from verifiers.protocols.debate.fields import FieldSpec
-from verifiers.protocols.debate.prompts import DebatePrompts
+from verifiers.protocols.debate.prompts import DebatePrompts, resolve_prompts
 from verifiers.protocols.debate.env import DebateEnv
 from verifiers.envs.multi_agent_kernel import StaticSchedule, TurnSlot
 
@@ -78,7 +78,6 @@ def _pack(
         question={k: _je.from_string(v) for k, v in question.items()},
         fields=fields,
         think_visibility=think_visibility,
-        prefill={},
         opponent_wrap=None,
         judges={},
         source_ref="<test>",
@@ -159,6 +158,32 @@ def test_field_instruction_covers_missing_user_template():
         "judge": {"final": {"decision": FieldSpec(type=str, description="winner id")}}
     }
     _build(_pack(user=user, fields=fields))
+
+
+def test_prompt_pack_unknown_top_level_key_is_rejected(tmp_path):
+    pack = tmp_path / "unknown_key.yaml"
+    pack.write_text(
+        """
+version: 2
+system:
+  debater_a: system
+  debater_b: system
+question:
+  debater_a: "{{ task_prompt }}"
+  debater_b: "{{ task_prompt }}"
+user:
+  debater_a:
+    default: argue
+  debater_b:
+    default: argue
+diagnostics:
+  owner: debate
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unknown prompt pack top-level key"):
+        resolve_prompts(str(pack))
 
 
 # ---------------------------------------------------------------------------
@@ -340,7 +365,6 @@ def test_consultancy_shaped_schedule_pack_passes():
         },
         fields={},
         think_visibility={},
-        prefill={},
         opponent_wrap=None,
         judges={},
         source_ref="<test>",
@@ -374,7 +398,6 @@ def test_consultancy_shaped_schedule_missing_judge_final_raises():
         },
         fields={},
         think_visibility={},
-        prefill={},
         opponent_wrap=None,
         judges={},
         source_ref="<test>",

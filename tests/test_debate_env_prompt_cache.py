@@ -65,7 +65,6 @@ def _prompts() -> DebatePrompts:
         question={member: _template("{{ task_prompt }}") for member in _MEMBERS},
         fields={},
         think_visibility={},
-        prefill={},
         opponent_wrap=None,
         judges={},
         source_ref="<test>",
