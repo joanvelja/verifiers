@@ -910,4 +910,4 @@ def test_hf_debate_open_ended_pcd4_final_schedule_pack_loads() -> None:
         (5, ("judge",), "final"),
     ]
     assert env.rubric.member_declares_answer["debater_a"] is True
-    assert env.rubric.member_declares_answer["debater_b"] is True
+    assert env.rubric.member_declares_answer["debater_b"] is False

@@ -82,12 +82,9 @@ user:
       the rebuttal. If you accept it, say so and do not manufacture a remaining
       objection. If you do not accept it, name the strongest unresolved flaw.
       Do not use XML tags in your reasoning. End with exactly one
-      <remaining_critique>...</remaining_critique> tag, exactly one
-      <status>...</status> tag, and exactly one <answer>...</answer> tag
-      containing the answer you would stand behind. If you accept the proposal,
-      restate its final answer; if unresolved, give the best available answer
-      or "unknown". The status value should be exactly one of: accept,
-      unresolved, reject.
+      <remaining_critique>...</remaining_critique> tag and exactly one
+      <status>...</status> tag. The status value should be exactly one of:
+      accept, unresolved, reject.
   judge:
     final: >-
       Decide the winner now. Base the decision only on the arguments in the
@@ -164,9 +161,6 @@ fields:
         type: str
         description: "accept, unresolved, or reject"
         scoring: {mode: enum, values: [accept, unresolved, reject]}
-      answer:
-        type: str
-        description: "the final answer the critic would stand behind — restate the proposal if accepted"
   judge:
     final:
       reasoning: {type: str}
