@@ -145,7 +145,7 @@ def test_v1_wrapper_rejects_unknown_kwargs(env_name: str):
 @pytest.mark.slow
 @pytest.mark.parametrize("env_dir", get_environments(), ids=lambda x: x.name)
 def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
-    """Test environment in a fresh venv with local verifiers installed first."""
+    """Test environment in a fresh venv with local verifiers taking precedence."""
     if env_dir.name in SKIPPED_ENVS:
         pytest.skip(f"Skipping {env_dir.name}")
     if env_dir.name in SKIPPED_ENV_LOADING_ENVS:
@@ -163,7 +163,9 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
         f"{(repo_root / 'packages' / 'harnesses').as_posix()} && "
         "uv pip install "
         f"--exclude-newer-package prime-pydantic-config={PRIME_PYDANTIC_CONFIG_CUTOFF} "
-        f"{env_dir.absolute().as_posix()}"
+        f"{env_dir.absolute().as_posix()} && "
+        "uv pip install --reinstall --no-deps "
+        f"{repo_root.as_posix()}"
     )
     try:
         process = subprocess.run(
