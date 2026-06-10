@@ -219,6 +219,19 @@ class TestEnvGroup:
         ):
             EnvGroup(envs=[env1], env_names=["math", "code"])
 
+    def test_env_group_rejects_multi_agent_sub_envs(self, mock_client):
+        """EnvGroup does not preserve MA generation/bridge contracts yet."""
+        env = SingleTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+            rubric=Rubric(),
+        )
+        env.is_multi_agent = True
+
+        with pytest.raises(ValueError, match="multi-agent"):
+            EnvGroup(envs=[env], env_names=["ma"])
+
     def test_env_group_dataset_concatenation(self, mock_client):
         """Test that EnvGroup adds routing labels under info."""
         env1 = SingleTurnEnv(

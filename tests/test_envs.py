@@ -12,6 +12,7 @@ INSTALL_TIMEOUT = 600  # 10 minutes for venv creation + package install
 IMPORT_TIMEOUT = 120  # 2 minutes for importing a package
 LOAD_TIMEOUT = 300  # 5 minutes for loading an environment (may download datasets)
 EVAL_TIMEOUT = 600  # 10 minutes for running vf-eval with -n 1 -r 1
+PRIME_PYDANTIC_CONFIG_CUTOFF = "2026-06-03T00:00:00Z"
 
 SKIPPED_ENVS = [
     # Requires fix for completion dataset setup
@@ -154,14 +155,14 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     cmd = (
         f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && "
         "uv pip install "
-        "--exclude-newer-package prime-pydantic-config=2026-05-20T00:00:00Z "
+        f"--exclude-newer-package prime-pydantic-config={PRIME_PYDANTIC_CONFIG_CUTOFF} "
         f"{repo_root.as_posix()} && "
         "uv pip install "
-        "--exclude-newer-package prime-pydantic-config=2026-05-20T00:00:00Z "
+        f"--exclude-newer-package prime-pydantic-config={PRIME_PYDANTIC_CONFIG_CUTOFF} "
         f"{(repo_root / 'packages' / 'tasksets').as_posix()} "
         f"{(repo_root / 'packages' / 'harnesses').as_posix()} && "
         "uv pip install "
-        "--exclude-newer-package prime-pydantic-config=2026-05-20T00:00:00Z "
+        f"--exclude-newer-package prime-pydantic-config={PRIME_PYDANTIC_CONFIG_CUTOFF} "
         f"{env_dir.absolute().as_posix()}"
     )
     try:
@@ -224,16 +225,25 @@ def help_test_can_eval_env(tmp_venv_dir: Path, env_dir: Path):
         pytest.skip(
             "Skipping tau2 default eval because PRIME_API_KEY is not configured"
         )
+    if env_dir.name == "gpqa_debate" and not os.getenv("HF_TOKEN"):
+        pytest.skip("Skipping gpqa_debate eval because HF_TOKEN is not configured")
     if os.getenv("PRIME_API_KEY"):
-        model_flags = "-m openai/gpt-4.1-mini -b https://api.pinference.ai/api/v1 -k PRIME_API_KEY"
+        model_flags = (
+            "-m openai/gpt-4.1-mini -b https://api.pinference.ai/api/v1 "
+            "-k PRIME_API_KEY --api-client-type openai_chat_completions"
+        )
     elif os.getenv("OPENAI_API_KEY"):
-        model_flags = "-m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY"
+        model_flags = (
+            "-m gpt-4.1-mini -b https://api.openai.com/v1 "
+            "-k OPENAI_API_KEY --api-client-type openai_chat_completions"
+        )
     else:
         pytest.skip("Skipping vf-eval smoke test because no API key is configured")
 
+    max_tokens = 4096 if "debate" in env_dir.name else 512
     eval_cmd = (
         f"cd {tmp_venv_dir} && source .venv/bin/activate && "
-        f"uv run vf-eval {env_dir.name} {model_flags} -n 1 -r 1 -t 512"
+        f"uv run vf-eval {env_dir.name} {model_flags} -n 1 -r 1 -t {max_tokens}"
     )
     try:
         process = subprocess.run(

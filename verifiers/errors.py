@@ -20,6 +20,20 @@ class EmptyModelResponseError(InvalidModelResponseError):
     pass
 
 
+class ReasoningOnlyEmptyResponseError(EmptyModelResponseError):
+    """Model produced private reasoning but no visible content/tool call."""
+
+    def __init__(self, message: str, *, reasoning_content: str | None = None) -> None:
+        super().__init__(message)
+        self.reasoning_content = reasoning_content
+
+
+class RolloutTimeoutError(Error):
+    """Rollout exceeded its wall-clock timeout."""
+
+    pass
+
+
 class OverlongPromptError(Error):
     """Used to catch overlong prompt errors (e.g. prompt + requested number of tokens exceeds model context length)"""
 

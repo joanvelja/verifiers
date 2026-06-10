@@ -16,7 +16,7 @@ from verifiers.clients.renderer_client import (
     _step_token_ids,
     _to_renderer_message,
 )
-from verifiers.errors import EmptyModelResponseError
+from verifiers.errors import EmptyModelResponseError, ReasoningOnlyEmptyResponseError
 from verifiers.types import (
     AssistantMessage,
     SystemMessage,
@@ -375,8 +375,11 @@ async def test_renderer_client_rejects_empty_dict_native_response():
 async def test_renderer_client_rejects_reasoning_only_native_response():
     client = object.__new__(RendererClient)
 
-    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
+    with pytest.raises(
+        ReasoningOnlyEmptyResponseError, match="reasoning but no content"
+    ) as exc_info:
         await client.raise_from_native_response({"reasoning_content": "hidden chain"})
+    assert exc_info.value.reasoning_content == "hidden chain"
 
 
 @pytest.mark.asyncio

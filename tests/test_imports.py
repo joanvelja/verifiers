@@ -42,6 +42,11 @@ def test_package_tasksets_and_harnesses_are_not_v1_exports():
         assert not hasattr(v1, name)
 
 
+def test_multi_agent_core_symbols_are_root_exports():
+    assert verifiers.MultiAgentEnv.__name__ == "MultiAgentEnv"
+    assert verifiers.MultiAgentRubric.__name__ == "MultiAgentRubric"
+
+
 def test_v1_taskset_imports_do_not_import_textarena():
     textarena_module = "tasksets.textarena"
     sys.modules.pop(textarena_module, None)

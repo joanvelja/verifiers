@@ -22,6 +22,7 @@ import asyncio
 import logging
 import time
 from abc import abstractmethod
+from copy import deepcopy
 from typing import Any, Literal, final
 
 import verifiers as vf
@@ -38,6 +39,7 @@ from verifiers.envs.request_context import ModelRequestContext
 from verifiers.types import (
     Messages,
     Response,
+    ResponseMessage,
     RolloutInput,
     SamplingArgs,
     State,
@@ -110,6 +112,9 @@ class MultiAgentEnv(vf.Environment):
         state["timed_out"] = True
         state["is_completed"] = True
         state["stop_condition"] = "timeout_reached"
+        state["error"] = vf.RolloutTimeoutError(
+            "multi-agent rollout exceeded timeout_seconds"
+        )
 
     # -- abstract: subclass must implement -----------------------------------
 
@@ -157,6 +162,58 @@ class MultiAgentEnv(vf.Environment):
         """
         raw = _coerce_text_content(response.message.content)
         return raw, ContentChannels(public=raw.strip())
+
+    @staticmethod
+    def _branch_state(state: State) -> State:
+        """Clone rollout state for a simultaneous request branch.
+
+        ``State.__setitem__`` forwards writes to input fields like
+        ``prompt``/``info`` into ``state["input"]``. A shallow copy would share
+        that input mapping and let branch-local writes poison the parent
+        rollout, so branch states get their own input copy.
+        """
+        branch = State(state)
+        if "input" in state:
+            branch["input"] = deepcopy(state["input"])
+        branch["metrics"] = {}
+        return branch
+
+    async def _get_member_response(
+        self,
+        state: State,
+        prompt: Messages,
+        member_id: str,
+        slot: TurnSlot,
+        *,
+        request_context: ModelRequestContext,
+    ) -> Response:
+        try:
+            return await self.get_model_response(
+                state,
+                prompt,
+                request_context=request_context,
+            )
+        except vf.ReasoningOnlyEmptyResponseError as exc:
+            _log.warning(
+                "member=%s slot=%s emitted reasoning but no visible content; "
+                "kernel will quarantine this turn.",
+                member_id,
+                slot.slot_id,
+            )
+            return Response(
+                id=f"reasoning-only-empty:{member_id}:{slot.slot_id}",
+                created=int(time.time()),
+                model=state["model"],
+                usage=None,
+                message=ResponseMessage(
+                    content="",
+                    reasoning_content=exc.reasoning_content,
+                    finish_reason="stop",
+                    is_truncated=False,
+                    tokens=None,
+                    tool_calls=None,
+                ),
+            )
 
     # -- prompt preparation --------------------------------------------------
 
@@ -311,9 +368,11 @@ class MultiAgentEnv(vf.Environment):
         agent = slot.agents[0]
         prompt = await self._prepare_prompt(state, agent, slot)
         parent_tracker = self._get_usage_tracker(state, create_if_missing=True)
-        response = await self.get_model_response(
+        response = await self._get_member_response(
             state,
             prompt,
+            agent,
+            slot,
             request_context=ModelRequestContext(
                 member_id=agent,
                 usage_tracker=parent_tracker,
@@ -333,12 +392,12 @@ class MultiAgentEnv(vf.Environment):
             token_count,
             channels,
         )
-        state["_kernel"] = result.new_state
         utt = result.committed[0]
         fields = await self.extract_fields(utt.public_channel, agent, slot)
         step = await self._build_step(state, prompt, response, utt, fields)
         state["trajectory"].append(step)
         self._record_prefix_candidate_index(state, agent, len(state["trajectory"]) - 1)
+        state["_kernel"] = result.new_state
 
     @final
     async def _run_simultaneous_slot(self, state: State, slot: TurnSlot) -> None:
@@ -376,7 +435,7 @@ class MultiAgentEnv(vf.Environment):
             parent_tracker.fork() if parent_tracker is not None else None
             for _ in slot.agents
         ]
-        per_agent_states = [State(state, metrics={}) for _ in slot.agents]
+        per_agent_states = [self._branch_state(state) for _ in slot.agents]
 
         # Phase 1: fan out concurrent model calls. On first raise, cancel
         # still-pending siblings — no wasted tokens, no late completions
@@ -389,9 +448,11 @@ class MultiAgentEnv(vf.Environment):
 
         async def _run_one(idx: int) -> None:
             p = prompts[idx]
-            responses[idx] = await self.get_model_response(
+            responses[idx] = await self._get_member_response(
                 per_agent_states[idx],
                 p,
+                slot.agents[idx],
+                slot,
                 request_context=ModelRequestContext(
                     member_id=slot.agents[idx],
                     usage_tracker=per_agent_trackers[idx],
@@ -435,12 +496,21 @@ class MultiAgentEnv(vf.Environment):
         # Collect real exceptions from ``done`` AND from any pending task
         # whose raise beat our cancel. Filter out the ``CancelledError``s
         # we ourselves triggered — those are housekeeping, not signal.
-        real_errors: list[BaseException] = [
-            exc
-            for t in done
-            if (exc := t.exception()) is not None
-            and not isinstance(exc, asyncio.CancelledError)
-        ]
+        real_errors: list[BaseException] = []
+        for idx, task in enumerate(tasks):
+            if task not in done:
+                continue
+            if task.cancelled():
+                real_errors.append(
+                    vf.Error(
+                        f"simultaneous slot {slot.slot_id}: model task for "
+                        f"member {slot.agents[idx]!r} was cancelled"
+                    )
+                )
+                continue
+            exc = task.exception()
+            if exc is not None and not isinstance(exc, asyncio.CancelledError):
+                real_errors.append(exc)
         for r in pending_results:
             if isinstance(r, BaseException) and not isinstance(
                 r, asyncio.CancelledError

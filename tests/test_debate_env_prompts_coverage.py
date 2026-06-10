@@ -204,6 +204,19 @@ def test_missing_question_raises_with_silent_label():
     assert "silent" in msg.lower()
 
 
+def test_empty_question_template_counts_as_missing_coverage():
+    q = {
+        "debater_a": "",
+        "debater_b": "{{ task_prompt }}",
+        "judge": "{{ task_prompt }}",
+    }
+    with pytest.raises(ValueError) as ei:
+        _build(_pack(question=q))
+    msg = str(ei.value)
+    assert "question: missing" in msg
+    assert "'debater_a'" in msg
+
+
 def test_missing_user_phase_no_default_raises():
     user = {
         "debater_a": {"propose": "argue"},  # NO critique, NO default
@@ -217,6 +230,19 @@ def test_missing_user_phase_no_default_raises():
     assert "'critique'" in msg
     assert "no 'default' fallback" in msg
     assert "silent" in msg.lower()
+
+
+def test_empty_user_template_does_not_satisfy_instruction_coverage():
+    user = {
+        "debater_a": {"propose": "argue", "critique": ""},
+        "debater_b": {"propose": "argue", "critique": "rebut"},
+        "judge": {"final": "decide"},
+    }
+    with pytest.raises(ValueError) as ei:
+        _build(_pack(user=user))
+    msg = str(ei.value)
+    assert "instruction['debater_a']" in msg
+    assert "'critique'" in msg
 
 
 def test_missing_user_groups_phases_per_member():

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
-from verifiers.errors import EmptyModelResponseError
+from verifiers.errors import ReasoningOnlyEmptyResponseError
 from verifiers.types import (
     AssistantMessage,
     ImageUrlContentPart,
@@ -74,8 +74,11 @@ async def test_openai_chat_rejects_reasoning_only_native_response():
         ]
     )
 
-    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
+    with pytest.raises(
+        ReasoningOnlyEmptyResponseError, match="reasoning but no content"
+    ) as exc_info:
         await client.raise_from_native_response(native_response)
+    assert exc_info.value.reasoning_content == "hidden chain"
 
 
 @pytest.mark.asyncio
@@ -296,8 +299,11 @@ async def test_anthropic_rejects_reasoning_only_native_response():
         content=[SimpleNamespace(type="thinking", thinking="hidden chain")],
     )
 
-    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
+    with pytest.raises(
+        ReasoningOnlyEmptyResponseError, match="reasoning but no content"
+    ) as exc_info:
         await client.raise_from_native_response(native_response)
+    assert exc_info.value.reasoning_content == "hidden chain"
 
 
 @pytest.mark.asyncio

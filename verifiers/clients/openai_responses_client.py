@@ -11,7 +11,11 @@ from verifiers.clients.openai_chat_completions_client import (
     get_usage_field,
     handle_openai_overlong_prompt,
 )
-from verifiers.errors import EmptyModelResponseError, InvalidModelResponseError
+from verifiers.errors import (
+    EmptyModelResponseError,
+    InvalidModelResponseError,
+    ReasoningOnlyEmptyResponseError,
+)
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -278,12 +282,21 @@ class OpenAIResponsesClient(
         has_text = False
         has_tool_call = False
         has_reasoning = False
+        reasoning_chunks: list[str] = []
         for item in output:
             item_type = _get_field(item, "type")
             if item_type == "function_call":
                 has_tool_call = True
             elif item_type == "reasoning":
                 has_reasoning = True
+                for summary in _get_field(item, "summary", []) or []:
+                    text = _get_field(summary, "text")
+                    if isinstance(text, str):
+                        reasoning_chunks.append(text)
+                for content in _get_field(item, "content", []) or []:
+                    text = _get_field(content, "text")
+                    if isinstance(text, str):
+                        reasoning_chunks.append(text)
             elif item_type == "message":
                 for part in _get_field(item, "content", []) or []:
                     if _get_field(part, "type") == "output_text" and _get_field(
@@ -297,8 +310,9 @@ class OpenAIResponsesClient(
 
         if not (has_text or has_tool_call):
             if has_reasoning:
-                raise EmptyModelResponseError(
-                    "Model returned reasoning but no content and did not call any tools"
+                raise ReasoningOnlyEmptyResponseError(
+                    "Model returned reasoning but no content and did not call any tools",
+                    reasoning_content="\n".join(reasoning_chunks) or None,
                 )
             raise EmptyModelResponseError(
                 "Model returned no content and did not call any tools"

@@ -716,6 +716,13 @@ def test_hf_debate_accepts_in_memory_mcq_dataset() -> None:
     assert env.members == ["debater_a", "debater_b", "judge"]
 
 
+def test_hf_debate_non_mcq_requires_explicit_prompt_pack() -> None:
+    raw = Dataset.from_list([{"question": "What is 2+2?", "answer": "4"}])
+
+    with pytest.raises(ValueError, match="prompts_ref"):
+        load_hf_debate(dataset=raw, task_type="open_ended")
+
+
 def test_hf_debate_named_dataset_requires_eval_split() -> None:
     env = load_hf_debate(
         dataset_name="test/dataset",
@@ -787,7 +794,7 @@ def test_hf_debate_matcher_accepts_prompt_pack_verdict_labels(mock_client) -> No
     env = load_hf_debate(
         dataset=raw,
         task_type="open_ended",
-        prompts_ref="default",
+        prompts_ref="selfplay_oe",
         judge_client=mock_client,
     )
 

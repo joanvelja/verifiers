@@ -155,21 +155,24 @@ class DebateEnv(MultiAgentEnv):
         for slot in schedule._slots:
             for member_id in slot.agents:
                 phase = slot.phase
-                if member_id not in prompts.system:
-                    missing_system.add(member_id)
-                if member_id not in prompts.question:
-                    missing_question.add(member_id)
-                user_block = prompts.user.get(member_id, {})
-                has_user_instruction = phase in user_block or "default" in user_block
-                has_think_instruction = (
-                    prompts.think_visibility.get(member_id, "disabled") != "disabled"
+                ctx = build_context(
+                    task_prompt="__coverage_task_prompt__",
+                    viewer_id=member_id,
+                    phase=phase,
+                    round_index=0,
+                    num_rounds=1,
+                    answer="__coverage_answer__",
+                    schedule_explainer="__coverage_schedule__",
                 )
-                has_field_instruction = bool(prompts.get_field_specs(member_id, phase))
-                if not (
-                    has_user_instruction
-                    or has_think_instruction
-                    or has_field_instruction
-                ):
+                try:
+                    system_text = prompts.render_system(member_id, ctx)
+                except KeyError:
+                    system_text = None
+                if not (system_text and system_text.strip()):
+                    missing_system.add(member_id)
+                if prompts.render_question(member_id, ctx) is None:
+                    missing_question.add(member_id)
+                if prompts.render_instruction(member_id, phase, ctx) is None:
                     missing_instruction.add((member_id, phase))
         if not (missing_system or missing_question or missing_instruction):
             return
@@ -614,10 +617,30 @@ class DebateEnv(MultiAgentEnv):
 # ---------------------------------------------------------------------------
 
 
-def load_environment(**kwargs: Any) -> DebateEnv:
+def load_environment(
+    *,
+    schedule_slots: list[dict[str, Any]],
+    members: list[str],
+    prompts_ref: str | None = None,
+    prompts: DebatePrompts | None = None,
+    truth_member: str | None = None,
+    judge_client: Any | None = None,
+    judge_model: str = "gpt-4.1-nano",
+    dataset: Any | None = None,
+    eval_dataset: Any | None = None,
+    timeout_seconds: float | None = None,
+    sampling_args: dict[str, Any] | None = None,
+    max_workers: int = 512,
+    env_id: str | None = None,
+    env_args: dict | None = None,
+    map_kwargs: dict | None = None,
+    max_seq_len: int | None = None,
+    score_rollouts: bool = True,
+    pass_threshold: float = 0.5,
+) -> DebateEnv:
     """Construct a DebateEnv from a prompt pack and a static schedule.
 
-    The factory is a pure dispatcher: it converts stringly-typed kwargs
+    The factory is a pure dispatcher: it converts stringly-typed inputs
     into typed component objects (schedule, prompts, judge client) and
     wires them into a rubric + env. It performs NO validation — each
     component validates its own preconditions at construction:
@@ -655,26 +678,36 @@ def load_environment(**kwargs: Any) -> DebateEnv:
                 agents=tuple(s["agents"]),
                 phase=s.get("phase", ""),
             )
-            for s in kwargs.pop("schedule_slots")
+            for s in schedule_slots
         )
     )
     prompts = _resolve_prompts_arg(
-        kwargs.pop("prompts_ref", None),
-        kwargs.pop("prompts", None),
+        prompts_ref,
+        prompts,
     )
     rubric = DebateRubric(
-        truth_member=kwargs.pop("truth_member", None),
-        members=kwargs["members"],  # don't pop — env needs it too
+        truth_member=truth_member,
+        members=members,
         prompts=prompts,
-        judge_client=kwargs.pop("judge_client", None),
-        judge_model=kwargs.pop("judge_model", "gpt-4.1-nano"),
+        judge_client=judge_client,
+        judge_model=judge_model,
     )
     return DebateEnv(
         schedule=schedule,
         prompts=prompts,
-        members=kwargs.pop("members"),
+        members=members,
         rubric=rubric,
-        **kwargs,
+        dataset=dataset,
+        eval_dataset=eval_dataset,
+        timeout_seconds=timeout_seconds,
+        sampling_args=sampling_args,
+        max_workers=max_workers,
+        env_id=env_id,
+        env_args=env_args,
+        map_kwargs=map_kwargs or {},
+        max_seq_len=max_seq_len,
+        score_rollouts=score_rollouts,
+        pass_threshold=pass_threshold,
     )
 
 

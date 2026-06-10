@@ -32,7 +32,7 @@ from verifiers.protocols.debate.env import DebateEnv
 from verifiers.protocols.debate.env import load_environment as load_debate_environment
 from verifiers.protocols.debate.fields import EnumScoring
 from verifiers.protocols.debate.prompts import resolve_prompts
-from verifiers.types import ClientConfig
+from verifiers.types import ClientConfig, SamplingArgs
 from verifiers.utils.hf_tasks import (
     AnswerFormat,
     TaskType,
@@ -82,7 +82,15 @@ def load_hf_debate_environment(
     judge_client: Client | None = None,
     judge_base_url: str = "https://api.openai.com/v1",
     judge_api_key_var: str = "OPENAI_API_KEY",
-    **extra: object,
+    timeout_seconds: float | None = None,
+    sampling_args: SamplingArgs | None = None,
+    max_workers: int = 512,
+    env_id: str | None = None,
+    env_args: dict | None = None,
+    map_kwargs: dict | None = None,
+    max_seq_len: int | None = None,
+    score_rollouts: bool = True,
+    pass_threshold: float = 0.5,
 ) -> DebateEnv:
     if system_prompt is not None:
         raise ValueError(
@@ -90,9 +98,17 @@ def load_hf_debate_environment(
             "role system prompts in the selected prompt pack instead."
         )
 
-    resolved_prompts_ref = prompts_ref or (
-        "selfplay" if task_type == "mcq" else "default"
-    )
+    if prompts_ref is None:
+        if task_type != "mcq":
+            raise ValueError(
+                "prompts_ref is required for non-MCQ debate tasks. The old "
+                "implicit 'default' prompt pack is intentionally not used as a "
+                "fallback because it does not define debater answer/instruction "
+                "contracts for open-ended scoring."
+            )
+        resolved_prompts_ref = "selfplay"
+    else:
+        resolved_prompts_ref = prompts_ref
 
     # Free-form (non-enum) debater answers can't be scored by MCQ exact-match, so
     # they route to the LLM grader, which needs a client. Enum/MCQ packs short-
@@ -209,7 +225,15 @@ def load_hf_debate_environment(
         judge_model=judge_model,
         dataset=build_dataset,
         eval_dataset=build_eval_dataset,
-        **extra,
+        timeout_seconds=timeout_seconds,
+        sampling_args=sampling_args,
+        max_workers=max_workers,
+        env_id=env_id,
+        env_args=env_args,
+        map_kwargs=map_kwargs,
+        max_seq_len=max_seq_len,
+        score_rollouts=score_rollouts,
+        pass_threshold=pass_threshold,
     )
 
 

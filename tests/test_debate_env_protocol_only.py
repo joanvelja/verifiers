@@ -7,7 +7,7 @@ import jinja2.sandbox
 import pytest
 
 from verifiers.protocols.debate.prompts import DebatePrompts
-from verifiers.protocols.debate.env import DebateEnv
+from verifiers.protocols.debate.env import DebateEnv, load_environment
 from verifiers.envs.multi_agent_kernel import StaticSchedule, TurnSlot
 
 
@@ -68,6 +68,21 @@ def _build(**kwargs) -> DebateEnv:
         dataset=lambda: None,
         **kwargs,
     )
+
+
+def test_debate_factory_rejects_misspelled_kwargs() -> None:
+    with pytest.raises(TypeError, match="truth_membr"):
+        load_environment(
+            schedule_slots=[
+                {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
+                {"slot_id": 1, "agents": ["debater_b"], "phase": "propose"},
+                {"slot_id": 2, "agents": ["judge"], "phase": "final"},
+            ],
+            members=list(_MEMBERS),
+            prompts=_pack(),
+            truth_membr="debater_a",
+            dataset=lambda: None,
+        )
 
 
 @pytest.mark.asyncio

@@ -8,7 +8,7 @@ from verifiers.clients.openai_responses_client import (
     OPENAI_RESPONSES_OUTPUT_FIELD,
     OpenAIResponsesClient,
 )
-from verifiers.errors import EmptyModelResponseError
+from verifiers.errors import ReasoningOnlyEmptyResponseError
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -152,8 +152,11 @@ async def test_raise_from_native_response_rejects_reasoning_only_response():
     )
     client = OpenAIResponsesClient(object())
 
-    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
+    with pytest.raises(
+        ReasoningOnlyEmptyResponseError, match="reasoning but no content"
+    ) as exc_info:
         await client.raise_from_native_response(native_response)
+    assert exc_info.value.reasoning_content == "thinking"
 
 
 @pytest.mark.asyncio

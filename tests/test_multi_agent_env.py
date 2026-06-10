@@ -11,6 +11,8 @@ from verifiers.envs.multi_agent_kernel import StaticSchedule, TurnSlot
 from verifiers.types import (
     ClientConfig,
     GenerationTarget,
+    MARScore,
+    MemberScore,
     MemberGenerationPlan,
     Messages,
     Response,
@@ -101,6 +103,61 @@ class _MetricClient(_RecordingClient):
         metrics["client/test_metric"] = metrics.get("client/test_metric", 0.0) + 1.0
         if self.fail:
             raise vf.Error("simulated client failure")
+        return await super().get_response(
+            prompt, model, sampling_args, tools=tools, **kwargs
+        )
+
+
+class _InputMutatingClient(_RecordingClient):
+    async def get_response(
+        self,
+        prompt: Messages,
+        model: str,
+        sampling_args: SamplingArgs,
+        tools=None,
+        **kwargs: Any,
+    ) -> Response:
+        state = kwargs["state"]
+        member_id = kwargs.get("member_id")
+        state["info"] = {"branch_member": member_id}
+        state["prompt"] = [
+            {"role": "user", "content": f"branch prompt from {member_id}"}
+        ]
+        return await super().get_response(
+            prompt, model, sampling_args, tools=tools, **kwargs
+        )
+
+
+class _SelfCancellingClient(_RecordingClient):
+    async def get_response(
+        self,
+        prompt: Messages,
+        model: str,
+        sampling_args: SamplingArgs,
+        tools=None,
+        **kwargs: Any,
+    ) -> Response:
+        if kwargs.get("member_id") == "agent_a":
+            raise asyncio.CancelledError()
+        return await super().get_response(
+            prompt, model, sampling_args, tools=tools, **kwargs
+        )
+
+
+class _ReasoningOnlyClient(_RecordingClient):
+    async def get_response(
+        self,
+        prompt: Messages,
+        model: str,
+        sampling_args: SamplingArgs,
+        tools=None,
+        **kwargs: Any,
+    ) -> Response:
+        if kwargs.get("member_id") == "agent_a":
+            raise vf.ReasoningOnlyEmptyResponseError(
+                "Model returned reasoning but no content and did not call any tools",
+                reasoning_content="private reasoning",
+            )
         return await super().get_response(
             prompt, model, sampling_args, tools=tools, **kwargs
         )
@@ -215,6 +272,21 @@ class _TwoRoundSimultaneousEnv(MultiAgentEnv):
         state["completion"] = [
             msg for step in state["trajectory"] for msg in step["completion"]
         ]
+
+
+class _ExtractFailEnv(_TwoRoundSimultaneousEnv):
+    async def extract_fields(
+        self, public_channel: str, member_id: str, slot: TurnSlot
+    ) -> dict[str, Any] | None:
+        raise vf.Error("extract failed after model response")
+
+
+class _ZeroMARubric(vf.MultiAgentRubric):
+    async def build_marscore(self, state: State) -> MARScore:
+        return MARScore(
+            members=[MemberScore(member_id=mid, reward=0.0) for mid in self.members],
+            episode_scalar=0.0,
+        )
 
 
 @pytest.mark.asyncio
@@ -734,6 +806,121 @@ async def test_failed_simultaneous_slot_does_not_leak_branch_metrics() -> None:
 
 
 @pytest.mark.asyncio
+async def test_simultaneous_branch_state_input_writes_do_not_mutate_parent() -> None:
+    env = _TwoRoundSimultaneousEnv(
+        schedule=StaticSchedule(
+            (TurnSlot(slot_id=0, agents=("agent_a", "agent_b"), phase="round"),)
+        ),
+        members=["agent_a", "agent_b"],
+        dataset=lambda: None,
+        score_rollouts=False,
+    )
+    client = _InputMutatingClient()
+
+    state = await env.rollout(
+        {
+            "prompt": [{"role": "user", "content": "parent question"}],
+            "answer": "answer",
+            "example_id": "branch-input-isolation",
+            "info": {"source": "parent"},
+        },
+        client,
+        "test-model",
+        {},
+    )
+
+    assert state["info"] == {"source": "parent"}
+    assert state["prompt"][0].content == "parent question"
+    assert len(state["trajectory"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_spontaneous_cancelled_simultaneous_branch_becomes_rollout_error() -> (
+    None
+):
+    env = _TwoRoundSimultaneousEnv(
+        schedule=StaticSchedule(
+            (TurnSlot(slot_id=0, agents=("agent_a", "agent_b"), phase="round"),)
+        ),
+        members=["agent_a", "agent_b"],
+        dataset=lambda: None,
+        score_rollouts=False,
+    )
+
+    state = await env.rollout(
+        {
+            "prompt": [{"role": "user", "content": "question"}],
+            "answer": "answer",
+            "example_id": "spontaneous-cancel",
+        },
+        _SelfCancellingClient(),
+        "test-model",
+        {},
+    )
+
+    assert isinstance(state["error"], vf.Error)
+    assert "cancelled" in str(state["error"])
+    assert state["trajectory"] == []
+
+
+@pytest.mark.asyncio
+async def test_reasoning_only_empty_response_quarantines_member_not_slot() -> None:
+    env = _TwoRoundSimultaneousEnv(
+        schedule=StaticSchedule(
+            (TurnSlot(slot_id=0, agents=("agent_a", "agent_b"), phase="round"),)
+        ),
+        members=["agent_a", "agent_b"],
+        dataset=lambda: None,
+        score_rollouts=False,
+    )
+
+    state = await env.rollout(
+        {
+            "prompt": [{"role": "user", "content": "question"}],
+            "answer": "answer",
+            "example_id": "reasoning-only-empty",
+        },
+        _ReasoningOnlyClient(),
+        "test-model",
+        {},
+    )
+
+    assert state["error"] is None
+    assert len(state["trajectory"]) == 2
+    by_member = {step["extras"]["member_id"]: step for step in state["trajectory"]}
+    assert by_member["agent_a"]["extras"]["parse_error"]
+    assert "parse_error" not in by_member["agent_b"]["extras"]
+
+
+@pytest.mark.asyncio
+async def test_failed_sequential_slot_does_not_publish_kernel_commit() -> None:
+    env = _ExtractFailEnv(
+        schedule=StaticSchedule(
+            (TurnSlot(slot_id=0, agents=("agent_a",), phase="round"),)
+        ),
+        members=["agent_a"],
+        dataset=lambda: None,
+        score_rollouts=False,
+    )
+
+    state = await env.rollout(
+        {
+            "prompt": [{"role": "user", "content": "question"}],
+            "answer": "answer",
+            "example_id": "sequential-stage-before-publish",
+        },
+        _RecordingClient(),
+        "test-model",
+        {},
+    )
+
+    assert isinstance(state["error"], vf.Error)
+    assert state["trajectory"] == []
+    assert state["_kernel"].slot_index == 0
+    assert state["_kernel"].transcript == ()
+
+
+@pytest.mark.asyncio
 async def test_max_total_completion_tokens_stops_multi_agent_rollout() -> None:
     env = _TwoRoundSimultaneousEnv(
         schedule=StaticSchedule(
@@ -798,3 +985,33 @@ async def test_timeout_cancels_simultaneous_slot_without_partial_commit() -> Non
     assert state["trajectory"] == []
     assert state["completion"] == []
     assert client.cancelled_members == {"agent_a", "agent_b"}
+
+
+@pytest.mark.asyncio
+async def test_timeout_scores_as_errored_marscore() -> None:
+    env = _TwoRoundSimultaneousEnv(
+        schedule=StaticSchedule(
+            (TurnSlot(slot_id=0, agents=("agent_a", "agent_b"), phase="round"),)
+        ),
+        members=["agent_a", "agent_b"],
+        dataset=lambda: None,
+        rubric=_ZeroMARubric(members=["agent_a", "agent_b"]),
+        timeout_seconds=0.01,
+    )
+
+    output = await env.run_rollout(
+        {
+            "prompt": [{"role": "user", "content": "question"}],
+            "answer": "answer",
+            "example_id": "timeout-mar-score",
+        },
+        _SlowClient(delay_seconds=1.0),
+        "test-model",
+        {},
+    )
+
+    assert output["mar_score"]["episode_metrics"]["errored_rollout"] == 1.0
+    assert output["mar_score"]["episode_error"] == {
+        "error_type": "RolloutTimeoutError",
+        "error_phase": "rollout",
+    }

@@ -41,6 +41,7 @@ from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
     OverlongPromptError,
+    ReasoningOnlyEmptyResponseError,
 )
 from verifiers.types import (
     AssistantMessage,
@@ -423,8 +424,9 @@ class OpenAIChatCompletionsClient(
         has_reasoning = bool(parse_reasoning_content(message))
         if not (has_content or has_tool_calls):
             if has_reasoning:
-                raise EmptyModelResponseError(
-                    "Model returned reasoning but no content and did not call any tools"
+                raise ReasoningOnlyEmptyResponseError(
+                    "Model returned reasoning but no content and did not call any tools",
+                    reasoning_content=parse_reasoning_content(message),
                 )
             raise EmptyModelResponseError(
                 "Model returned no content and did not call any tools"
