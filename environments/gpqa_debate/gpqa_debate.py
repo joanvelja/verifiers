@@ -9,6 +9,7 @@ from verifiers.protocols.debate.env import (
     DebateEnv,
     load_environment as load_debate_env,
 )
+from verifiers.utils.hf_tasks import split_train_for_eval
 
 LETTERS = ("A", "B", "C", "D")
 
@@ -28,11 +29,31 @@ def load_environment(
     schedule: list[dict] | None = None,
     truth_member: str | None = None,
 ) -> DebateEnv:
-    def build_split(n: int, split_seed: int) -> Dataset:
+    def build_split(split: str) -> Dataset:
         vf.ensure_keys(["HF_TOKEN"])
-        raw = list(load_dataset("Idavidrein/gpqa", subset, split="train"))
-        rows = raw if n == -1 else raw[:n]
-        rng = random.Random(split_seed)
+        raw = load_dataset("Idavidrein/gpqa", subset, split="train")
+        if (
+            num_train_examples >= 0
+            and num_eval_examples >= 0
+            and num_train_examples + num_eval_examples > len(raw)
+        ):
+            raise ValueError(
+                f"num_train_examples + num_eval_examples = "
+                f"{num_train_examples + num_eval_examples} exceeds the "
+                f"{len(raw)} rows of Idavidrein/gpqa:{subset} — train and "
+                "eval are disjoint holdouts of the same source split."
+            )
+        # GPQA ships only a train split, so carve a disjoint eval holdout the
+        # same way the HF debate loader derives one (seeded shuffle once, eval
+        # rows first, train from the remainder) — eval never overlaps train.
+        train_raw, eval_raw = split_train_for_eval(
+            raw,
+            seed=seed,
+            num_train_examples=num_train_examples,
+            num_eval_examples=num_eval_examples,
+        )
+        rows = train_raw if split == "train" else eval_raw
+        rng = random.Random(seed if split == "train" else seed + 1)
 
         def format_row(row: dict, example_idx: int) -> dict:
             correct = row["Correct Answer"].strip()
@@ -68,10 +89,10 @@ def load_environment(
         )
 
     def build_dataset() -> Dataset:
-        return build_split(num_train_examples, seed)
+        return build_split("train")
 
     def build_eval_dataset() -> Dataset:
-        return build_split(num_eval_examples, seed + 1)
+        return build_split("eval")
 
     return load_debate_env(
         schedule_slots=schedule or DEFAULT_SCHEDULE,

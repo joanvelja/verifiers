@@ -42,7 +42,8 @@ def rollout_to_member_rollouts(
     ``sampling_args``, ``trajectory_id`` and ``mar_score``. Missing any
     of these is a contract violation upstream — we ``KeyError`` rather
     than silently substituting defaults that would corrupt training
-    identity (RAE baselines key on ``(task, example_id, member_id)``).
+    identity (RAE baselines key on ``(env_name, example_id)``; the member
+    enters via the antithetic sign, not the baseline key).
 
     ``trajectory`` is ALSO required and must be present as a key on the
     output. ``state_to_output`` only includes it when the caller passes

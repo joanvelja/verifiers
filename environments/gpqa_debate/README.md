@@ -8,7 +8,7 @@
 ### Datasets
 - **Primary dataset(s)**: `Idavidrein/gpqa`
 - **Source links**: [Idavidrein/gpqa](https://huggingface.co/datasets/Idavidrein/gpqa)
-- **Splits**: Uses the Hugging Face `train` split for both train and eval builders. Set `subset` to `gpqa_diamond` or `gpqa_main`.
+- **Splits**: GPQA only ships a Hugging Face `train` split; the env shuffles it once with `seed` and carves a disjoint eval holdout (eval rows first, train from the remainder), so train and eval never overlap. Set `subset` to `gpqa_diamond` or `gpqa_main`.
 
 ### Task
 - **Type**: multi-agent debate
@@ -51,9 +51,9 @@ prime env push --path ./environments/gpqa_debate --visibility=PRIVATE
 | --- | ---- | ------- | ----------- |
 | `prompts_ref` | str | `"selfplay"` | Built-in prompt pack name or path to a prompt pack YAML file |
 | `subset` | str | `"gpqa_diamond"` | GPQA subset: `gpqa_diamond` or `gpqa_main` |
-| `num_train_examples` | int | `-1` | Number of train examples; `-1` means all |
-| `num_eval_examples` | int | `-1` | Number of eval examples; `-1` means all |
-| `seed` | int | `0` | Choice-shuffling seed |
+| `num_train_examples` | int | `-1` | Number of train examples; `-1` means all rows not reserved for eval. Errors if `num_train_examples + num_eval_examples` exceeds the dataset |
+| `num_eval_examples` | int | `-1` | Number of held-out eval examples (disjoint from train); `-1` means a default 20% holdout |
+| `seed` | int | `0` | Holdout-split and choice-shuffling seed |
 | `schedule` | list | default 3-slot simultaneous-propose/simultaneous-critique schedule | Override turn schedule as a list of `{slot_id, agents, phase}` dicts |
 | `truth_member` | str \| null | `null` | Optional asymmetric truth side; leave unset for symmetric self-play/frozen-opponent debate |
 
