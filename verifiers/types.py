@@ -319,7 +319,8 @@ class BaseRolloutInput(TypedDict):
 
 class RolloutInput(BaseRolloutInput, total=False):
     # required: prompt, example_id
-    # optional: answer, info, rollout_id
+    # optional: task_prompt, answer, info, rollout_id
+    task_prompt: str
     answer: str
     info: Info | str
     rollout_id: str
@@ -489,7 +490,14 @@ class StateForTaskDescriptor:
 class State(dict):
     for_task = StateForTaskDescriptor()
 
-    INPUT_FIELDS = ["prompt", "answer", "info", "example_id", "rollout_id"]
+    INPUT_FIELDS = [
+        "prompt",
+        "task_prompt",
+        "answer",
+        "info",
+        "example_id",
+        "rollout_id",
+    ]
     INTERNAL_KEYS = {"is_completed", "stop_condition", "is_truncated", "error"}
     RUNTIME_HANDLE_KEYS = {"runtime_id", "client_key"}
     ENDPOINT_HANDLE_KEYS = {
@@ -1111,7 +1119,7 @@ def assert_json_serializable(value: object) -> None:
         raise TypeError("Task and State values must be JSON-serializable.") from e
 
 
-TASK_INPUT_FIELDS = {"prompt", "answer", "info", "example_id"}
+TASK_INPUT_FIELDS = {"prompt", "task_prompt", "answer", "info", "example_id"}
 
 
 def normalize_task_payload(value: object) -> dict[str, Any]:

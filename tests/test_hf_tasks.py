@@ -17,6 +17,7 @@ from environments.hf_singleturn.hf_singleturn import (
 )
 from verifiers.envs.multi_agent_kernel import KernelState
 from verifiers.protocols.debate import hf as debate_hf
+from verifiers.protocols.debate.rubric import question_from_state
 from verifiers.utils import hf_tasks
 from verifiers.utils.hf_tasks import (
     MultipleChoiceRubric,
@@ -27,6 +28,17 @@ from verifiers.utils.hf_tasks import (
     normalize_hf_dataset,
 )
 from verifiers.utils.judge_prompts import normalize_verdict_token, resolve_judge_prompts
+
+
+def _prompt_text(prompt: list[object]) -> str:
+    parts: list[str] = []
+    for msg in prompt:
+        if isinstance(msg, dict):
+            content = msg.get("content", "")
+        else:
+            content = getattr(msg, "content", "")
+        parts.append(str(content))
+    return "\n".join(parts)
 
 
 def test_normalize_gpqa_style_mcq_row() -> None:
@@ -717,6 +729,23 @@ def test_hf_debate_accepts_in_memory_mcq_dataset() -> None:
     row = env.get_dataset()[0]
     assert row["answer"] == "B"
     assert env.members == ["debater_a", "debater_b", "judge"]
+    assert row["task_prompt"] == "2+2?\n\nA. 3\nB. 4\nC. 5\nD. 6"
+    assert "Think step by step" not in _prompt_text(row["prompt"])
+
+
+def test_hf_debate_uses_clean_task_prompt_for_protocol_rendering() -> None:
+    raw = Dataset.from_list([{"question": "What is 2+2?", "answer": "4"}])
+
+    env = load_hf_debate(
+        dataset=raw,
+        task_type="open_ended",
+        prompts_ref="selfplay_oe",
+    )
+    row = env.get_dataset()[0]
+
+    assert row["task_prompt"] == "What is 2+2?"
+    assert "Think step by step" not in _prompt_text(row["prompt"])
+    assert question_from_state(vf.State(input=row)) == "What is 2+2?"
 
 
 def test_hf_debate_non_mcq_requires_explicit_prompt_pack() -> None:

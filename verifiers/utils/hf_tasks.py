@@ -443,6 +443,11 @@ def normalize_hf_row(
         answer_format=answer_format,
         choices=choices,
     )
+    task_prompt = render_task_prompt(
+        question,
+        choices=choices,
+        prompt_template=prompt_template,
+    )
     prompt = render_messages(
         question,
         task_type=task_type,
@@ -468,6 +473,7 @@ def normalize_hf_row(
 
     return {
         "prompt": prompt,
+        "task_prompt": task_prompt,
         "answer": answer,
         "example_id": str(example_id)
         if not isinstance(example_id, int)
