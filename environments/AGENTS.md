@@ -398,7 +398,7 @@ The environment automatically wraps rubrics in a `RubricGroup` as needed, so mon
 
 ## Tool Environments
 
-All currently-supported environment types in Verifiers are built on `MultiTurnEnv`, which implements the core single-agent rollout loop (even `SingleTurnEnv` is simply a `MultiTurnEnv` with `max_turns=1` and a placeholder `env_response` method). `ToolEnv` adds tool calling to this foundation.
+Most single-agent environment types in Verifiers are built on `MultiTurnEnv`, which implements the core single-agent rollout loop (even `SingleTurnEnv` is simply a `MultiTurnEnv` with `max_turns=1` and a placeholder `env_response` method). Multi-agent environments use the sibling `MultiAgentEnv` rollout loop. `ToolEnv` adds tool calling to the single-agent foundation.
 
 Tools are defined as Python functions. Verifiers extracts tool schemas from function signatures and docstrings for use with OpenAI-compatible tool calling:
 

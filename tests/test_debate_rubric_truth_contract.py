@@ -189,3 +189,67 @@ async def test_answerless_critic_is_not_counted_as_wrong_or_all_debaters_correct
     assert "all_debaters_correct" not in score.episode_metrics
     assert "judge_selected_correct" not in score.episode_metrics
     assert "final_answer/debater_b" not in score.episode_categorical
+
+
+@pytest.mark.asyncio
+async def test_latest_answer_extraction_failure_does_not_reuse_stale_final_answer() -> (
+    None
+):
+    rubric = _ExactDiagnosticRubric(
+        members=["debater_a", "debater_b", "judge"],
+        prompts=resolve_prompts("selfplay_oe"),
+    )
+
+    score = await rubric.build_marscore(
+        {
+            "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+            "answer": "4",
+            "trajectory": [
+                {
+                    "completion": [{"role": "assistant", "content": "old answer"}],
+                    "extras": {
+                        "member_id": "debater_a",
+                        "phase": "propose",
+                        "fields": {"answer": "4"},
+                    },
+                },
+                {
+                    "completion": [{"role": "assistant", "content": "truncated"}],
+                    "extras": {
+                        "member_id": "debater_a",
+                        "phase": "critique",
+                        "fields": {},
+                        "parse_error": "missing answer field",
+                    },
+                },
+                {
+                    "completion": [{"role": "assistant", "content": "wrong"}],
+                    "extras": {
+                        "member_id": "debater_b",
+                        "phase": "critique",
+                        "fields": {"answer": "5"},
+                    },
+                },
+                {
+                    "completion": [{"role": "assistant", "content": "debater_a"}],
+                    "extras": {
+                        "member_id": "judge",
+                        "phase": "final",
+                        "fields": {"decision": "debater_a"},
+                    },
+                },
+            ],
+        }
+    )
+
+    member_metrics = {m.member_id: m.metrics for m in score.members}
+    assert member_metrics["debater_a"]["num_commits"] == 1.0
+    assert member_metrics["debater_a"]["extraction_failed"] == 1.0
+    assert "final_correct" not in member_metrics["debater_a"]
+    assert "accuracy" not in member_metrics["debater_a"]
+
+    assert score.episode_categorical["first_answer/debater_a"] == "4"
+    assert "final_answer/debater_a" not in score.episode_categorical
+    assert "any_answer_member_correct" not in score.episode_metrics
+    assert "all_answer_members_correct" not in score.episode_metrics
+    assert "judge_selected_correct" not in score.episode_metrics

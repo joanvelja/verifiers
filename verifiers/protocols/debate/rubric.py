@@ -20,6 +20,7 @@ Diagnostics (weight-0 telemetry; never feed reward):
 """
 
 import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 import verifiers as vf
@@ -59,8 +60,18 @@ JUDGE_SAMPLING_ARGS = {
 
 
 def question_from_state(state: State) -> str:
-    """Return the first user message's content from ``state['prompt']``,
-    tolerating both dict and pydantic message shapes."""
+    """Return the task question used for debate scoring and diagnostics.
+
+    Debate datasets keep ``task_prompt`` as the clean task text/choices. The
+    rendered chat prompt may include role instructions, field instructions, or
+    answer-tag wording that must not leak into judge/grader views.
+    """
+    for source in (state, state.get("input"), state.get("task")):
+        if isinstance(source, Mapping):
+            task_prompt = source.get("task_prompt")
+            if task_prompt is not None and str(task_prompt).strip():
+                return str(task_prompt)
+
     for msg in state.get("prompt") or []:
         role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
         content = (
@@ -290,7 +301,8 @@ class DebateRubric(MultiAgentRubric):
             )
             if mid != "judge" and m["commits"]:
                 episode_categorical[f"first_answer/{mid}"] = m["commits"][0]
-                episode_categorical[f"final_answer/{mid}"] = m["commits"][-1]
+                if m["latest_had_answer"]:
+                    episode_categorical[f"final_answer/{mid}"] = m["commits"][-1]
 
         return MARScore(
             members=members,
@@ -398,7 +410,6 @@ class DebateRubric(MultiAgentRubric):
             if not target or not declares_answer:
                 continue
             if not m["latest_had_answer"]:
-                final_correct_by_member[mid] = 0.0
                 if m["turns"]:
                     dst["extraction_failed"] = 1.0
                 continue
@@ -425,7 +436,9 @@ class DebateRubric(MultiAgentRubric):
                 )
 
         debaters = [
-            (mid, m) for mid, m in snaps.items() if mid != "judge" and m["commits"]
+            (mid, m)
+            for mid, m in snaps.items()
+            if mid != "judge" and m["commits"] and m["latest_had_answer"]
         ]
         matcher_task: asyncio.Task[bool | None] | None = None
         if len(debaters) >= 2:
