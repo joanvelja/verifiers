@@ -413,3 +413,25 @@ def test_consultancy_shaped_schedule_missing_judge_final_raises():
     msg = str(ei.value)
     assert "instruction['judge']" in msg
     assert "'final'" in msg
+
+
+def test_default_pack_question_does_not_leak_ground_truth():
+    """Adversarial regression guard: a future edit reintroducing ``{{ answer }}``
+    (or any ground-truth field) into the default pack's question templates must
+    go red. The question template may only surface the task prompt."""
+    from verifiers.protocols.debate.prompts import resolve_prompts
+
+    prompts = resolve_prompts("default")
+    answer_token = "XYZZY-GROUND-TRUTH-1337"
+    ctx = {
+        "task_prompt": "What is the airspeed velocity of an unladen swallow?",
+        "answer": answer_token,
+        "correct_answer": answer_token,
+        "fields": {"answer": answer_token},
+    }
+    for role in ("debater_a", "debater_b", "judge"):
+        rendered = prompts.render_question(role, ctx)
+        if rendered is not None:
+            assert answer_token not in rendered, (
+                f"ground truth leaked into {role}'s question"
+            )

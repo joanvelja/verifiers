@@ -80,8 +80,35 @@ PCD4_SCHEDULE = [
 ]
 
 
-def test_gpqa_open_ended_debate_accepts_caller_prompts_ref():
-    """Caller-supplied prompts_ref must win over the wrapper default.
+PCD4_FINAL_SCHEDULE = [
+    {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
+    {"slot_id": 1, "agents": ["debater_b"], "phase": "critique"},
+    {"slot_id": 2, "agents": ["debater_a"], "phase": "rebuttal"},
+    {"slot_id": 3, "agents": ["debater_b"], "phase": "counter_critique"},
+    {"slot_id": 4, "agents": ["debater_a", "debater_b"], "phase": "final"},
+    {"slot_id": 5, "agents": ["judge"], "phase": "final"},
+]
+
+SEQUENTIAL4_SCHEDULE = [
+    {"slot_id": 0, "agents": ["debater_a"], "phase": "propose"},
+    {"slot_id": 1, "agents": ["debater_b"], "phase": "propose"},
+    {"slot_id": 2, "agents": ["debater_a"], "phase": "critique"},
+    {"slot_id": 3, "agents": ["debater_b"], "phase": "critique"},
+    {"slot_id": 4, "agents": ["judge"], "phase": "final"},
+]
+
+
+@pytest.mark.parametrize(
+    ("prompts_ref", "schedule"),
+    [
+        ("selfplay_oe_pcd4", PCD4_SCHEDULE),
+        ("selfplay_oe_pcd4_final", PCD4_FINAL_SCHEDULE),
+        ("selfplay_oe_sequential4", SEQUENTIAL4_SCHEDULE),
+    ],
+)
+def test_gpqa_open_ended_debate_accepts_caller_prompts_ref(prompts_ref, schedule):
+    """Caller-supplied prompts_ref must win over the wrapper default,
+    for every pack the prime-rl kvsmoke configs actually pass.
 
     Regression: the wrapper used to hardcode prompts_ref="selfplay_oe" while
     forwarding **kwargs, so any caller passing prompts_ref hit
@@ -90,15 +117,13 @@ def test_gpqa_open_ended_debate_accepts_caller_prompts_ref():
     grader client only needs its API key at the first grading request.
     """
     module = load_env_module(
-        "gpqa_open_ended_debate_prompts_ref_test",
+        f"gpqa_open_ended_debate_prompts_ref_test_{prompts_ref}",
         "environments/gpqa_open_ended_debate/gpqa_open_ended_debate.py",
     )
 
-    env = module.load_environment(
-        prompts_ref="selfplay_oe_pcd4", schedule=PCD4_SCHEDULE
-    )
+    env = module.load_environment(prompts_ref=prompts_ref, schedule=schedule)
 
-    assert env.prompts.source_ref.endswith("selfplay_oe_pcd4.yaml")
+    assert env.prompts.source_ref.endswith(f"{prompts_ref}.yaml")
 
 
 def _synthetic_gpqa_rows(n: int) -> Dataset:
