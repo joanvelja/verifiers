@@ -13,11 +13,13 @@ Examples::
         "dataset_subset": "gpqa_diamond", "task_type": "mcq",
         "choices_key": "choices", "prompts_ref": "selfplay"}'
 
-    # Open-ended (LLM grader — needs OPENAI_API_KEY):
+    # Open-ended (LLM grader — GPQA preset defaults use OPENROUTER_API_KEY):
     vf-eval hf_debate --env-args '{"dataset_name": "joanvelja/gpqa-open-ended",
         "task_type": "open_ended", "question_key": "question",
         "answer_key": "answer", "prompts_ref": "selfplay_oe",
-        "judge_model": "gpt-5.4-mini"}'
+        "judge_model": "deepseek/deepseek-v4-flash",
+        "judge_base_url": "https://openrouter.ai/api/v1",
+        "judge_api_key_var": "OPENROUTER_API_KEY"}'
 """
 
 from verifiers.protocols.debate.hf import (  # noqa: F401

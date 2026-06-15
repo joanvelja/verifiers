@@ -10,6 +10,23 @@
 # (question = original task question, answer = GT, response = debater's answer).
 
 _grader:
+  model: deepseek/deepseek-v4-flash
+  sampling_args:
+    max_completion_tokens: 8192
+    extra_body:
+      reasoning:
+        effort: high
+        exclude: true
+      provider:
+        data_collection: deny
+        zdr: true
+        require_parameters: true
+        allow_fallbacks: false
+        only:
+          - AtlasCloud
+  cache:
+    rubric_family: gpqa_science_oe_final_answer_v1
+    variant_id: deepseek-v4-flash-high_gpqa-oe_grader_v1
   system: |
     You are grading a free-response science answer. You are given the QUESTION, a
     REFERENCE answer (known correct), and a model's RESPONSE. Decide whether the
@@ -57,6 +74,23 @@ _grader:
   negative: INCORRECT
 
 _matcher:
+  model: deepseek/deepseek-v4-flash
+  sampling_args:
+    max_completion_tokens: 8192
+    extra_body:
+      reasoning:
+        effort: high
+        exclude: true
+      provider:
+        data_collection: deny
+        zdr: true
+        require_parameters: true
+        allow_fallbacks: false
+        only:
+          - AtlasCloud
+  cache:
+    rubric_family: gpqa_science_oe_matcher_v1
+    variant_id: deepseek-v4-flash-high_gpqa-oe_matcher_v1
   system: |
     You are comparing two free-response science answers (A and B) to the same
     QUESTION for substantive equivalence. Do NOT solve the problem yourself —

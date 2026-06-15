@@ -20,8 +20,8 @@ include = ["gpqa_open_ended_debate.py", "pyproject.toml", "README.md"]
 
 [tool.verifiers.eval]
 # Debate-family default: eval via the TITO/renderer path (same token-route as
-# training, matching the sibling gpqa-debate). The grader still hits gpt-5.4-mini
-# via its own OpenAIChatCompletionsClient regardless. To eval the policy with an
+# training, matching the sibling gpqa-debate). The grader still uses its own
+# OpenRouter-backed OpenAIChatCompletionsClient regardless. To eval the policy with an
 # API model instead, pass `--api-client-type openai_chat_completions` (see README).
 api_client_type = "renderer"
 num_examples = 5
