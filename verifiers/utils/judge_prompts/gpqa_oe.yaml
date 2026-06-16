@@ -21,9 +21,15 @@ _grader:
         data_collection: deny
         zdr: true
         require_parameters: true
-        allow_fallbacks: false
-        only:
+        quantizations:
+          - fp8
+        order:
           - AtlasCloud
+          - Parasail
+          - Novita
+          - AkashML
+          - Io Net
+        allow_fallbacks: true
   cache:
     rubric_family: gpqa_science_oe_final_answer_v1
     variant_id: deepseek-v4-flash-high_gpqa-oe_grader_v1
@@ -85,9 +91,15 @@ _matcher:
         data_collection: deny
         zdr: true
         require_parameters: true
-        allow_fallbacks: false
-        only:
+        quantizations:
+          - fp8
+        order:
           - AtlasCloud
+          - Parasail
+          - Novita
+          - AkashML
+          - Io Net
+        allow_fallbacks: true
   cache:
     rubric_family: gpqa_science_oe_matcher_v1
     variant_id: deepseek-v4-flash-high_gpqa-oe_matcher_v1
