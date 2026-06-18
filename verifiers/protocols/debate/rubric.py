@@ -463,7 +463,9 @@ class DebateRubric(MultiAgentRubric):
             # logged ``*_error`` flag instead of a silent drop or a crash.
             await asyncio.gather(*diagnostic_tasks, return_exceptions=True)
 
-        def diagnostic_outcome(task: asyncio.Task[bool | None], label: str) -> bool | None:
+        def diagnostic_outcome(
+            task: asyncio.Task[bool | None], label: str
+        ) -> bool | None:
             exc = task.exception()
             if exc is not None:
                 logger.warning("debate diagnostic %s failed: %r", label, exc)

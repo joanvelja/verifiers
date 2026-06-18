@@ -51,6 +51,7 @@ def test_client_config_accepts_empty_nested_endpoint_configs_key():
     assert len(config.endpoint_configs) == 1
     assert config.endpoint_configs[0].api_base_url == "http://localhost:8001/v1"
 
+
 def test_build_http_client_binds_ipv4_and_keeps_limits():
     """_build_http_client must bind the source address to IPv4 AND keep the
     configured pool limits.

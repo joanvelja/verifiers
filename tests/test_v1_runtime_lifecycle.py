@@ -3579,7 +3579,11 @@ async def test_cleanup_rollout_evicts_only_its_own_trajectory() -> None:
                     completion_ids=[0],
                     completion_mask=[1],
                     completion_logprobs=[0.0],
-                    routed_experts={"data": b"x" * 1024, "shape": [1, 40, 8], "start": 0},
+                    routed_experts={
+                        "data": b"x" * 1024,
+                        "shape": [1, 40, 8],
+                        "start": 0,
+                    },
                 ),
                 "trajectory_id": tid,
             }
@@ -3596,7 +3600,9 @@ async def test_cleanup_rollout_evicts_only_its_own_trajectory() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cleanup_rollout_evicts_trajectory_even_if_cancelled_mid_cleanup() -> None:
+async def test_cleanup_rollout_evicts_trajectory_even_if_cancelled_mid_cleanup() -> (
+    None
+):
     """Regression (cancel-hardening): a CancelledError landing on a cleanup await
     must NOT leave the trajectory in the live registry.
 
@@ -3635,8 +3641,11 @@ async def test_cleanup_rollout_evicts_trajectory_even_if_cancelled_mid_cleanup()
     s["trajectory"] = [
         {
             "tokens": ResponseTokens(
-                prompt_ids=[0], prompt_mask=[1], completion_ids=[0],
-                completion_mask=[1], completion_logprobs=[0.0],
+                prompt_ids=[0],
+                prompt_mask=[1],
+                completion_ids=[0],
+                completion_mask=[1],
+                completion_logprobs=[0.0],
                 routed_experts={"data": b"x" * 4096, "shape": [1, 40, 8], "start": 0},
             ),
             "trajectory_id": tid,
