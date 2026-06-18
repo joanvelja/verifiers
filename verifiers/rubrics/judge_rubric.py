@@ -2,6 +2,8 @@ import asyncio
 from collections import OrderedDict
 from typing import Any
 
+from openai import APIStatusError
+
 from verifiers.clients import Client
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.parsers.parser import Parser
@@ -36,6 +38,24 @@ Response:
 ```
 
 Respond either "yes" or "no" only."""
+
+# OpenRouter routing/provider-policy failures: the eligible provider pool is
+# empty for the requested filters (zdr/data_collection/quantizations/order).
+# These are deterministic given the provider block — retrying the identical
+# request cannot succeed, so they must not consume the judge retry budget.
+_NON_RETRYABLE_ROUTING_PHRASES = (
+    "no endpoints found that meet your data policy",
+    "no allowed providers",
+    "no endpoints found",
+)
+
+
+def _is_non_retryable_routing_error(exc: BaseException) -> bool:
+    if not isinstance(exc, APIStatusError):
+        return False
+    if exc.status_code not in (400, 404):
+        return False
+    return any(phrase in str(exc).lower() for phrase in _NON_RETRYABLE_ROUTING_PHRASES)
 
 
 class JudgeRubric(Rubric):
@@ -292,6 +312,8 @@ class JudgeRubric(Rubric):
                 return str(response_obj.message.content or "")
             except Exception as exc:
                 last_error = exc
+                if _is_non_retryable_routing_error(exc):
+                    raise
                 if attempt >= self.judge_max_retries:
                     break
                 self.judge_cache_stats["retries"] += 1

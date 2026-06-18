@@ -7,6 +7,7 @@ responses + stats back.
 """
 
 import asyncio
+import ctypes
 import gc
 import logging
 import signal
@@ -270,13 +271,45 @@ class EnvWorker:
             except zmq.Again:
                 pass  # best-effort
 
+            self._reclaim_memory()
+
+    def _reclaim_memory(self) -> None:
+        """Return freed arena pages to the OS at the stats cadence.
+
+        The env-worker analog of the orchestrator's per-step trim — these are
+        separate child processes the orchestrator's malloc_trim can't reach.
+        malloc_trim hands freed glibc arena pages back so RSS tracks live memory
+        instead of ratcheting.
+
+        We do NOT force a full ``gc.collect()`` here. The rollout state that was
+        leaking (the live-trajectory registry and the interception-server body
+        store) is an acyclic tree freed by refcounting the moment its sole holder
+        is popped (see ``Runtime.cleanup_rollout`` / ``Endpoint.discard_request``);
+        a forced full collection reclaims nothing extra and a synchronous
+        collect over a large heap stalls the event loop past the worker
+        heartbeat timeout under load. Automatic generational gc stays enabled at
+        the default threshold for the rare genuine cycle."""
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (OSError, AttributeError) as e:
+            self.logger.debug(f"malloc_trim(0) unavailable: {e}")
+
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         """Main worker loop."""
         self.logger.info(f"Starting worker {self.worker_name}")
 
+        # Freeze the permanent startup set so every future young-gen scan stays
+        # cheap. The env-worker host-RAM ramp was NOT cyclic garbage: it was
+        # unbounded *retention* (the live-trajectory registry + interception body
+        # store, both acyclic and refcount-freed once their holder is popped --
+        # fixed in cleanup_rollout / discard_request). So we leave automatic
+        # generational gc at the default threshold (cheap, catches the rare real
+        # cycle) and do the one-time freeze below to move long-lived init objects
+        # out of every future scan. We do NOT force a full gc.collect() per stats
+        # tick -- it reclaims nothing extra here and stalls the loop past the
+        # worker heartbeat under load (see _reclaim_memory).
         gc.collect()
         gc.freeze()
-        gc.set_threshold(150_000, 10, 10)
 
         lag_task = asyncio.create_task(self.lag_monitor.run())
         stats_task = asyncio.create_task(self.stats_loop())

@@ -224,6 +224,19 @@ class Endpoint:
     def get_request(self, request_id: str) -> ConfigData:
         return cast(ConfigData, self.server.intercepts[request_id])
 
+    def discard_request(self, request_id: str) -> None:
+        """Drop a delivered intercept from the server's per-request store.
+
+        ``InterceptionServer.intercepts`` holds each request's raw body (full
+        message history, incl. base64 images on multimodal envs) and is otherwise
+        only swept at rollout ``unregister`` -- so a long multi-turn rollout
+        accumulates every turn's body until it ends. The HTTP handler keeps its
+        own reference to deliver the response, so dropping the server copy after
+        delivery is safe; ``pop(..., None)`` makes it idempotent and ``unregister``
+        still sweeps any undelivered entries.
+        """
+        self.server.intercepts.pop(request_id, None)
+
     def request_context(
         self, request_id: str, request: ConfigData
     ) -> ModelRequestContext:
@@ -450,14 +463,17 @@ async def forward_request(
             state._set_error(error_info(e))
         raise
     finally:
-        if bool(request.get("stream")):
-            if request.get("protocol") != "openai_chat_completions":
-                raise NotImplementedError(
-                    "Streaming interception is currently supported for OpenAI Chat Completions."
-                )
-            await synthesize_stream(request, response, error)
-        else:
-            deliver_response(request, response, error)
+        try:
+            if bool(request.get("stream")):
+                if request.get("protocol") != "openai_chat_completions":
+                    raise NotImplementedError(
+                        "Streaming interception is currently supported for OpenAI Chat Completions."
+                    )
+                await synthesize_stream(request, response, error)
+            else:
+                deliver_response(request, response, error)
+        finally:
+            endpoint.discard_request(request_id)
 
 
 def normalize_endpoint_prompt(request: ConfigData) -> Messages:

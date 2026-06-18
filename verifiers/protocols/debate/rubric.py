@@ -20,6 +20,7 @@ Diagnostics (weight-0 telemetry; never feed reward):
 """
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -41,6 +42,8 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.judge_prompts import JudgeTemplate, normalize_verdict_token
+
+logger = logging.getLogger(__name__)
 
 # gpt-5.x are REASONING models: reasoning tokens count against
 # max_completion_tokens. A 256 ceiling truncates mid-reasoning on hard grading
@@ -452,10 +455,25 @@ class DebateRubric(MultiAgentRubric):
         if matcher_task is not None:
             diagnostic_tasks.append(matcher_task)
         if diagnostic_tasks:
-            await asyncio.gather(*diagnostic_tasks)
+            # Weight-0 diagnostics must never drop a scored rollout: a single
+            # judge-backend failure (transport error, empty response, OpenRouter
+            # routing 404) raised by one task would, under a bare gather, cancel
+            # its siblings and abort scoring. ``return_exceptions=True`` lets
+            # every task settle; ``diagnostic_outcome`` then maps a failure to a
+            # logged ``*_error`` flag instead of a silent drop or a crash.
+            await asyncio.gather(*diagnostic_tasks, return_exceptions=True)
+
+        def diagnostic_outcome(
+            task: asyncio.Task[bool | None], label: str
+        ) -> bool | None:
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("debate diagnostic %s failed: %r", label, exc)
+                return None
+            return task.result()
 
         for mid, field, task in grader_jobs:
-            verdict = task.result()
+            verdict = diagnostic_outcome(task, f"grader[{mid}:{field}]")
             dst = per_member[mid]
             if verdict is None:
                 dst["grader_error"] = 1.0
@@ -504,7 +522,7 @@ class DebateRubric(MultiAgentRubric):
                 episode["truth_member_won"] = float(winner == self.truth_member)
 
         if matcher_task is not None:
-            verdict = matcher_task.result()
+            verdict = diagnostic_outcome(matcher_task, "matcher")
             if verdict is None:
                 episode["matcher_error"] = 1.0
             else:

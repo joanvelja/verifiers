@@ -87,8 +87,18 @@ def _build_http_client(
         max_connections=config.max_connections,
         max_keepalive_connections=config.max_keepalive_connections,
     )
+    # Bind the source address to IPv4. On dual-stack compute nodes with dead
+    # IPv6 egress, httpx tries the AAAA record first and hangs a connect attempt
+    # per call before falling back to IPv4; across many workers that exhausts
+    # connections and surfaces as grader_error=1.0. local_address "0.0.0.0"
+    # forces the IPv4 path and skips the dead AAAA attempt.
+    #
+    # NOTE: when an explicit transport is passed, httpx ignores the client-level
+    # ``limits=`` -- the pool limits must live on the transport, so we pass both
+    # ``limits`` and ``local_address`` to AsyncHTTPTransport.
+    transport = httpx.AsyncHTTPTransport(limits=limits, local_address="0.0.0.0")
     return httpx.AsyncClient(
-        limits=limits,
+        transport=transport,
         timeout=timeout,
         headers=headers,
     )
