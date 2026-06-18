@@ -3499,3 +3499,156 @@ async def test_child_state_can_borrow_primary_program_sandbox(
     await parent.cleanup_group([parent_task], [parent_state])
 
     assert FakeSandboxClient.deleted == ["sbx-1"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_rollout_evicts_registered_trajectory() -> None:
+    """Regression: ``Runtime.trajectories`` must not retain completed rollouts.
+
+    ``register_trajectory`` caches each rollout's trajectory (keyed by the unique
+    ``trajectory_id``) so append-mode sub-rollouts can resolve it by id while the
+    parent is live. ``cleanup_rollout`` must evict it at rollout end, exactly like
+    its sibling per-trajectory dicts (``_model_request_locks``,
+    ``_inflight_visible_model_requests``). Without the eviction the dict grows one
+    full trajectory — including the routed-experts payload bytes — per rollout for
+    the lifetime of the runtime, an unbounded env-worker host-RAM leak that
+    OOM-killed the GPQA debate-calibration runs.
+    """
+    usage = Usage(
+        prompt_tokens=4, reasoning_tokens=0, completion_tokens=3, total_tokens=7
+    )
+    harness = make_harness(
+        client=cast(
+            Client, FakeModelClient([fake_response(content="ok", usage=usage)])
+        ),
+        model="fake-model",
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    # The rollout registered its trajectory under its id during setup...
+    tid = str(state["trajectory_id"])
+    # ...and cleanup_rollout must have evicted it (along with the sibling dicts).
+    assert harness.runtime.trajectories == {}, (
+        f"cleanup_rollout leaked trajectory {tid!r}: "
+        f"{list(harness.runtime.trajectories)}"
+    )
+    assert tid not in harness.runtime._model_request_locks
+    assert tid not in harness.runtime._inflight_visible_model_requests
+
+    await harness.teardown()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_rollout_evicts_only_its_own_trajectory() -> None:
+    """``cleanup_rollout`` evicts the cleaned rollout's entry and leaves others.
+
+    Directly exercises register -> cleanup at the ``Runtime`` level so the eviction
+    is unambiguous and isolated from the full rollout machinery.
+    """
+    from verifiers.types import ResponseTokens, State
+
+    runtime = Runtime()
+
+    async def _noop_async(*a: object, **k: object) -> None:
+        return None
+
+    def _noop(*a: object, **k: object) -> None:
+        return None
+
+    # Stub the orthogonal handler/release machinery (needs fully-real Task/toolset
+    # objects); leave the real per-trajectory pop tail under test.
+    runtime._rollout_handlers = lambda *a, **k: []  # type: ignore[assignment]
+    runtime.run_rollout_handlers = _noop_async  # type: ignore[assignment]
+    runtime.release_runtime_objects = _noop_async  # type: ignore[assignment]
+    runtime.release_sandboxes = _noop_async  # type: ignore[assignment]
+    runtime.close_mcp_tools = _noop_async  # type: ignore[assignment]
+    runtime.release_scoped_tools = _noop  # type: ignore[assignment]
+    runtime.release_model_client = _noop_async  # type: ignore[assignment]
+    runtime.release_tool_handles = _noop  # type: ignore[assignment]
+
+    def _state(tid: str) -> State:
+        s = State()
+        s["trajectory_id"] = tid
+        s["trajectory"] = [
+            {
+                "tokens": ResponseTokens(
+                    prompt_ids=[0],
+                    prompt_mask=[1],
+                    completion_ids=[0],
+                    completion_mask=[1],
+                    completion_logprobs=[0.0],
+                    routed_experts={"data": b"x" * 1024, "shape": [1, 40, 8], "start": 0},
+                ),
+                "trajectory_id": tid,
+            }
+        ]
+        return s
+
+    for tid in ("a", "b", "c"):
+        runtime.register_trajectory(_state(tid))
+    assert set(runtime.trajectories) == {"a", "b", "c"}
+
+    await runtime.cleanup_rollout(task=None, state=_state("b"))
+
+    assert set(runtime.trajectories) == {"a", "c"}, "must evict exactly the cleaned id"
+
+
+@pytest.mark.asyncio
+async def test_cleanup_rollout_evicts_trajectory_even_if_cancelled_mid_cleanup() -> None:
+    """Regression (cancel-hardening): a CancelledError landing on a cleanup await
+    must NOT leave the trajectory in the live registry.
+
+    cleanup_rollout runs in harness.run's un-shielded finally; the env worker
+    cancels in-flight rollouts via task.cancel(). The trajectories.pop is the
+    first statement (before any await), so even if cleanup is cancelled at its
+    first await the entry is already gone. Asserts that property directly by
+    making the first cleanup await raise CancelledError.
+    """
+    from verifiers.types import ResponseTokens, State
+
+    runtime = Runtime()
+
+    async def _raise_cancel(*a: object, **k: object) -> None:
+        raise asyncio.CancelledError()
+
+    async def _noop_async(*a: object, **k: object) -> None:
+        return None
+
+    def _noop(*a: object, **k: object) -> None:
+        return None
+
+    # First await in cleanup_rollout is run_rollout_handlers -> make it cancel.
+    runtime._rollout_handlers = lambda *a, **k: []  # type: ignore[assignment]
+    runtime.run_rollout_handlers = _raise_cancel  # type: ignore[assignment]
+    runtime.release_runtime_objects = _noop_async  # type: ignore[assignment]
+    runtime.release_sandboxes = _noop_async  # type: ignore[assignment]
+    runtime.close_mcp_tools = _noop_async  # type: ignore[assignment]
+    runtime.release_scoped_tools = _noop  # type: ignore[assignment]
+    runtime.release_model_client = _noop_async  # type: ignore[assignment]
+    runtime.release_tool_handles = _noop  # type: ignore[assignment]
+
+    tid = "cancel-tid"
+    s = State()
+    s["trajectory_id"] = tid
+    s["trajectory"] = [
+        {
+            "tokens": ResponseTokens(
+                prompt_ids=[0], prompt_mask=[1], completion_ids=[0],
+                completion_mask=[1], completion_logprobs=[0.0],
+                routed_experts={"data": b"x" * 4096, "shape": [1, 40, 8], "start": 0},
+            ),
+            "trajectory_id": tid,
+        }
+    ]
+    runtime.register_trajectory(s)
+    assert tid in runtime.trajectories
+
+    # cleanup is cancelled at its first await; the pop already ran before it.
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.cleanup_rollout(task=None, state=s)
+
+    assert tid not in runtime.trajectories, (
+        "trajectory leaked: cancel mid-cleanup skipped the eviction"
+    )

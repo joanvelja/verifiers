@@ -1037,6 +1037,17 @@ class Runtime:
         return states
 
     async def cleanup_rollout(self, task: Task, state: State) -> None:
+        # Evict the completed rollout's trajectory FIRST, before any await. It is
+        # registered per-rollout by ``register_trajectory`` (keyed by the unique
+        # ``trajectory_id``) so append-mode sub-rollouts can resolve it by id WHILE
+        # the parent is live; by cleanup the rollout is done and its trajectory has
+        # been serialized into the output, so the entry is dead. Doing this before
+        # the awaits below makes eviction cancel-proof: a CancelledError landing on
+        # any cleanup await would otherwise unwind before a later pop and leak the
+        # entry permanently (the process-lifetime runtime never reclaims it).
+        # Without eviction the dict grows one full trajectory (incl. routed-experts
+        # payload bytes) per rollout -> unbounded env-worker host-RAM leak.
+        self.trajectories.pop(str(state["trajectory_id"]), None)
         handlers = unique_handlers(
             [
                 *self.rollout_cleanup,
@@ -1052,6 +1063,8 @@ class Runtime:
         key = str(state["trajectory_id"])
         self._model_request_locks.pop(key, None)
         self._inflight_visible_model_requests.pop(key, None)
+        # (trajectories evicted at the top of cleanup_rollout, before the awaits,
+        # so a mid-cleanup cancel cannot skip it.)
         self.release_tool_handles(state)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:

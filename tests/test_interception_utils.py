@@ -309,3 +309,30 @@ async def test_non_streaming_response_future_failure_surfaces_to_state(monkeypat
     assert "Intercepted request failed" in msg
     assert "RuntimeError" in msg
     assert "vLLM raised" in msg
+
+
+def test_endpoint_discard_request_pops_delivered_intercept():
+    """Regression: a delivered intercept must be dropped from the server store.
+
+    InterceptionServer.intercepts holds each request's raw body (full message
+    history, incl. base64 images on multimodal envs) and is otherwise only swept
+    at rollout unregister -- so a long multi-turn rollout accumulates every turn's
+    body until it ends, an env-worker host-RAM leak. forward_request now calls
+    Endpoint.discard_request after delivery; verify it pops the entry, is
+    idempotent, and leaves other rollouts' entries intact.
+    """
+    from verifiers.v1.utils.endpoint_utils import Endpoint
+
+    endpoint = Endpoint(port=0)
+    server = endpoint.server
+    server.intercepts["req-a"] = {"rollout_id": "r1", "body": b"x" * 4096}
+    server.intercepts["req-b"] = {"rollout_id": "r1", "body": b"y" * 4096}
+
+    endpoint.discard_request("req-a")
+    assert "req-a" not in server.intercepts, "delivered intercept must be dropped"
+    assert "req-b" in server.intercepts, "must not touch other entries"
+
+    # Idempotent: discarding an already-gone / never-present id is a no-op.
+    endpoint.discard_request("req-a")
+    endpoint.discard_request("never-existed")
+    assert set(server.intercepts) == {"req-b"}
