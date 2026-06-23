@@ -20,7 +20,6 @@ _grader:
       provider:
         data_collection: deny
         zdr: true
-        require_parameters: true
         quantizations:
           - fp8
         order:
@@ -90,7 +89,6 @@ _matcher:
       provider:
         data_collection: deny
         zdr: true
-        require_parameters: true
         quantizations:
           - fp8
         order:
