@@ -274,7 +274,8 @@ class EnvWorker:
             self._reclaim_memory()
 
     def _reclaim_memory(self) -> None:
-        """Best-effort trim of freed arena tops at the stats cadence.
+        """Trim each arena's contiguous top free space at the stats cadence (a
+        backstop for small-allocation slack, NOT the primary reclaim).
 
         The env-worker analog of the orchestrator's per-step trim — these are
         separate child processes the orchestrator's malloc_trim can't reach.
