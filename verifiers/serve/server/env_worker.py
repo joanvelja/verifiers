@@ -274,17 +274,23 @@ class EnvWorker:
             self._reclaim_memory()
 
     def _reclaim_memory(self) -> None:
-        """Return freed arena pages to the OS at the stats cadence.
+        """Best-effort trim of freed arena tops at the stats cadence.
 
         The env-worker analog of the orchestrator's per-step trim — these are
         separate child processes the orchestrator's malloc_trim can't reach.
-        malloc_trim hands freed glibc arena pages back so RSS tracks live memory
-        instead of ratcheting.
+        NOTE: malloc_trim only returns each arena's *contiguous top* free space.
+        Under sustained inflight an arena almost always has a live block pinning
+        its top, so once many per-thread arenas exist trim reclaims little — it is
+        NOT sufficient to prevent the RSS ratchet (confirmed by repro). The actual
+        page-return mechanism for the large routed_experts buffers is the
+        M_MMAP_THRESHOLD policy set in ``run_worker`` (those allocs go through
+        mmap -> munmap on free). This trim stays as a cheap backstop for
+        small-allocation arena slack.
 
-        We do NOT force a full ``gc.collect()`` here. The rollout state that was
-        leaking (the live-trajectory registry and the interception-server body
-        store) is an acyclic tree freed by refcounting the moment its sole holder
-        is popped (see ``Runtime.cleanup_rollout`` / ``Endpoint.discard_request``);
+        We do NOT force a full ``gc.collect()`` here. A separate, already-fixed
+        retention bug (the live-trajectory registry and the interception-server
+        body store) was an acyclic tree freed by refcounting the moment its sole
+        holder is popped (see ``Runtime.cleanup_rollout`` / ``Endpoint.discard_request``);
         a forced full collection reclaims nothing extra and a synchronous
         collect over a large heap stalls the event loop past the worker
         heartbeat timeout under load. Automatic generational gc stays enabled at
@@ -431,6 +437,22 @@ class EnvWorker:
 
     @classmethod
     def run_worker(cls, *args, **kwargs) -> None:
+        # Route large transient allocations (the ~3.4 MB msgpack-packed routed_experts
+        # payload per rollout) through mmap, so free() -> munmap() hands them straight
+        # back to the OS instead of high-water-marking per-thread glibc arenas that
+        # malloc_trim cannot reclaim under sustained inflight (an arena's top stays
+        # pinned by live work). Pinning the threshold also disables glibc's dynamic
+        # auto-raise. Must precede the 512-thread executor and any rollout allocation.
+        # Root cause: per-thread-arena fragmentation. Deeper "bulk tensors off the
+        # message bus" cleanup tracked in joanvelja/prime-rl#76.
+        _M_MMAP_THRESHOLD = -3
+        _MMAP_THRESHOLD_BYTES = 1 << 20  # 1 MiB: below the routed_experts payload, above small control allocs
+        rc = ctypes.CDLL("libc.so.6").mallopt(_M_MMAP_THRESHOLD, _MMAP_THRESHOLD_BYTES)
+        if rc != 1:
+            raise RuntimeError(
+                f"mallopt(M_MMAP_THRESHOLD, {_MMAP_THRESHOLD_BYTES}) returned {rc}; "
+                "env-worker arena fix inactive — refusing to start rather than silently OOM later"
+            )
         try:
             import uvloop
 
