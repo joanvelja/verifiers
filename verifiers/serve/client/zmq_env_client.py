@@ -12,6 +12,7 @@ import zmq.asyncio
 from verifiers.utils.logging_utils import print_time
 from verifiers.utils.serve_utils import msgpack_encoder
 from verifiers.serve.client.env_client import EnvClient
+from verifiers.serve.server._routed_frames import reattach_routed_attachments
 from verifiers.serve.types import (
     BaseRequest,
     BaseResponseT,
@@ -194,16 +195,19 @@ class ZMQEnvClient(EnvClient):
         """Continuously receive responses from environment servers."""
         while True:
             try:
-                # Receive multipart: [request_id, payload]
+                # Receive multipart: [request_id, control] + K routed_experts frames
                 msg = await self.socket.recv_multipart()
 
                 if len(msg) < 2:
                     self.logger.error(
-                        f"Received invalid message from env server {self.name}, expected 2 frames but got {len(msg)}"
+                        f"Received invalid message from env server {self.name}, expected at least 2 frames but got {len(msg)}"
                     )
                     continue
 
-                request_id_bytes, response_data = msg[0], msg[1]
+                request_id_bytes, control_bytes = msg[0], msg[1]
+                # Raw routed_experts blobs ride as trailing frames (issue #76,
+                # PR1); zero frames on the request/error/no-experts path.
+                attachments = msg[2:]
                 request_id = request_id_bytes.decode()
 
                 # Pop pending request atomically
@@ -212,7 +216,11 @@ class ZMQEnvClient(EnvClient):
 
                 if pending_req is not None and not pending_req.future.done():
                     try:
-                        response = msgpack.unpackb(response_data, raw=False)
+                        response = msgpack.unpackb(control_bytes, raw=False)
+                        # Rebind raw bytes into each routed_experts site BEFORE
+                        # set_result — downstream model_validate / prefix-match
+                        # reads "data" directly, so reattachment cannot defer.
+                        reattach_routed_attachments(response, attachments)
                         pending_req.future.set_result(response)
                     except Exception as unpack_error:
                         # Unpacking failed - fail the specific future

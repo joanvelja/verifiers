@@ -208,6 +208,7 @@ class RoutedExpertsPayload(TypedDict):
     # Keep the raw response sidecar opaque so Pydantic does not validate memoryview.
     data: Any
     shape: list[int]
+    dtype: str
     start: int
 
 
