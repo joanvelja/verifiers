@@ -54,7 +54,9 @@ def single_blob_arr() -> np.ndarray:
 
 def test_detach_reattach_roundtrip(single_blob_arr: np.ndarray):
     control = _rollout_response(single_blob_arr, start=41)
-    original_bytes = control["output"]["trajectory"][0]["tokens"]["routed_experts"]["data"]
+    original_bytes = control["output"]["trajectory"][0]["tokens"]["routed_experts"][
+        "data"
+    ]
 
     lightened, attachments = detach_routed_attachments(control)
 
@@ -73,9 +75,12 @@ def test_detach_reattach_roundtrip(single_blob_arr: np.ndarray):
 
     # Byte-identical data per site after a full roundtrip.
     assert site["data"] == original_bytes
-    assert np.frombuffer(site["data"], dtype=np.dtype(site["dtype"])).reshape(
-        site["shape"]
-    ).tobytes() == single_blob_arr.tobytes()
+    assert (
+        np.frombuffer(site["data"], dtype=np.dtype(site["dtype"]))
+        .reshape(site["shape"])
+        .tobytes()
+        == single_blob_arr.tobytes()
+    )
 
 
 def test_group_multi_sidecar_distinct_content():
@@ -93,7 +98,9 @@ def test_group_multi_sidecar_distinct_content():
 
     # K = G dense ordinals, one frame per rollout.
     assert len(attachments) == G
-    descs = [out["trajectory"][0]["tokens"]["routed_experts"] for out in lightened["outputs"]]
+    descs = [
+        out["trajectory"][0]["tokens"]["routed_experts"] for out in lightened["outputs"]
+    ]
     assert [d["frame"] for d in descs] == list(range(G))
     assert all("data" not in d for d in descs)
 
@@ -101,10 +108,14 @@ def test_group_multi_sidecar_distinct_content():
 
     for i, out in enumerate(rehydrated["outputs"]):
         site = out["trajectory"][0]["tokens"]["routed_experts"]
-        hydrated = np.frombuffer(site["data"], dtype=np.dtype(site["dtype"])).reshape(site["shape"])
+        hydrated = np.frombuffer(site["data"], dtype=np.dtype(site["dtype"])).reshape(
+            site["shape"]
+        )
         # The whole point: rollout i's hydrated array carries value i, not some
         # other rollout's value (the silent-shear nightmare).
-        assert np.all(hydrated == i), f"rollout {i} cross-wired: got values {np.unique(hydrated)}"
+        assert np.all(hydrated == i), (
+            f"rollout {i} cross-wired: got values {np.unique(hydrated)}"
+        )
         np.testing.assert_array_equal(hydrated, arrs[i])
 
 
@@ -112,7 +123,9 @@ def test_encoding_guard(single_blob_arr: np.ndarray):
     """G5: a descriptor with encoding != 'raw' must fail loud on reattach."""
     control = _rollout_response(single_blob_arr, start=0)
     lightened, attachments = detach_routed_attachments(control)
-    lightened["output"]["trajectory"][0]["tokens"]["routed_experts"]["encoding"] = "base64"
+    lightened["output"]["trajectory"][0]["tokens"]["routed_experts"]["encoding"] = (
+        "base64"
+    )
 
     with pytest.raises(ValueError, match="encoding"):
         reattach_routed_attachments(lightened, attachments)
@@ -146,5 +159,7 @@ def test_zero_len_step():
     rehydrated = reattach_routed_attachments(lightened, attachments)
     site = rehydrated["output"]["trajectory"][0]["tokens"]["routed_experts"]
     assert site["data"] == b""
-    hydrated = np.frombuffer(site["data"], dtype=np.dtype(site["dtype"])).reshape(site["shape"])
+    hydrated = np.frombuffer(site["data"], dtype=np.dtype(site["dtype"])).reshape(
+        site["shape"]
+    )
     assert hydrated.shape == (0, 4, 3)

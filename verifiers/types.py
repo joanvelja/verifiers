@@ -208,7 +208,9 @@ class RoutedExpertsPayload(TypedDict):
     # Keep the raw response sidecar opaque so Pydantic does not validate memoryview.
     data: Any
     shape: list[int]
-    dtype: str
+    # Renderer-parsed payloads carry only data/shape/start; detach_routed_attachments
+    # stamps dtype (default uint8) onto the wire descriptor, so keep it optional here.
+    dtype: NotRequired[str]
     start: int
 
 

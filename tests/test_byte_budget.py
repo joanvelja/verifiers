@@ -1,17 +1,17 @@
 """Cancel-safety tests for the env_worker byte-budget gate (issue #76, G2).
 
-``_ByteBudget`` is the credit gate spanning extract->pack->send. The load-bearing
+``ByteBudget`` is the credit gate spanning extract->pack->send. The load-bearing
 property is G2: a cancel storm must never leak credits into a deadlock. The class
 is pure async (no sockets / env), so it is unit-testable without mocking.
 """
 
 import asyncio
 
-from verifiers.serve.server.env_worker import _ByteBudget
+from verifiers.serve.server.env_worker import ByteBudget
 
 
 async def test_byte_budget_basic_acquire_release():
-    budget = _ByteBudget(100)
+    budget = ByteBudget(100)
     charge = await budget.acquire(40)
     assert charge == 40
     assert budget.available == 60
@@ -22,7 +22,7 @@ async def test_byte_budget_basic_acquire_release():
 async def test_byte_budget_oversized_borrows_whole_pool():
     """A message larger than the pool waits for an empty pool then borrows it all
     (charge == capacity) — it can never wedge."""
-    budget = _ByteBudget(100)
+    budget = ByteBudget(100)
     charge = await budget.acquire(250)
     assert charge == 100
     assert budget.available == 0
@@ -31,7 +31,7 @@ async def test_byte_budget_oversized_borrows_whole_pool():
 
 
 async def test_byte_budget_backpressure_then_grant():
-    budget = _ByteBudget(100)
+    budget = ByteBudget(100)
     first = await budget.acquire(80)
     # Second can't fit (80 + 50 > 100) -> blocks.
     waiter = asyncio.create_task(budget.acquire(50))
@@ -47,7 +47,7 @@ async def test_byte_budget_backpressure_then_grant():
 async def test_byte_budget_cancel_storm_no_credit_leak():
     """T3 (G2): a storm of blocked waiters all cancelled mid-pack must return the
     pool to full — no leaked credit, no deadlock."""
-    budget = _ByteBudget(100)
+    budget = ByteBudget(100)
     held = await budget.acquire(100)  # pool now empty; all newcomers block.
 
     waiters = [asyncio.create_task(budget.acquire(10)) for _ in range(20)]
@@ -76,7 +76,7 @@ async def test_byte_budget_cancel_storm_no_credit_leak():
 async def test_byte_budget_grant_concurrent_with_cancel_no_leak():
     """If a waiter is granted in the same tick it is cancelled, the charge debited
     on its behalf must be returned (acquire's finally path), not leaked."""
-    budget = _ByteBudget(100)
+    budget = ByteBudget(100)
     held = await budget.acquire(100)
 
     waiter = asyncio.create_task(budget.acquire(60))

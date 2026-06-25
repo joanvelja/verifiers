@@ -59,7 +59,7 @@ _SER_EXECUTOR_NAME = "vf-ser"
 # misconfigured value — never a silently-clamped magic number).
 _BYTE_BUDGET_ENV = "VF_ROUTED_BYTE_BUDGET_MB"
 _DEFAULT_BYTE_BUDGET_MB = 512  # ~512 inflight x ~1 MB amortized blob, conservative
-                               # vs the unbounded ~2.3-3.6 GB pre-cutover peak.
+# vs the unbounded ~2.3-3.6 GB pre-cutover peak.
 
 
 def _resolve_byte_budget_bytes() -> int:
@@ -88,7 +88,7 @@ def _resolve_byte_budget_bytes() -> int:
     return mb << 20
 
 
-class _ByteBudget:
+class ByteBudget:
     """Async credit gate over a fixed pool of *bytes* (not a count).
 
     A coroutine acquires ``n`` bytes before materializing+sending its
@@ -264,7 +264,7 @@ class EnvWorker:
         )
 
         # Byte-budget gate over routed-attachment bytes in flight (G2).
-        self.byte_budget = _ByteBudget(_resolve_byte_budget_bytes())
+        self.byte_budget = ByteBudget(_resolve_byte_budget_bytes())
 
         # state tracking
         self.clients: dict[str, Client] = {}
@@ -417,7 +417,9 @@ class EnvWorker:
                     [client_id, request_id.encode(), control_bytes, *attachments]
                 )
             except zmq.ZMQError as e:
-                self.logger.warning(f"Failed to send response for {request_id[:7]}: {e}")
+                self.logger.warning(
+                    f"Failed to send response for {request_id[:7]}: {e}"
+                )
         finally:
             # Synchronous release in the finally — G2: cannot be interrupted by a
             # pending cancellation, so credits always return (no deadlock).
@@ -623,7 +625,9 @@ class EnvWorker:
         # Root cause: per-thread-arena fragmentation. Deeper "bulk tensors off the
         # message bus" cleanup tracked in joanvelja/prime-rl#76.
         _M_MMAP_THRESHOLD = -3
-        _MMAP_THRESHOLD_BYTES = 1 << 20  # 1 MiB: below the routed_experts payload, above small control allocs
+        _MMAP_THRESHOLD_BYTES = (
+            1 << 20
+        )  # 1 MiB: below the routed_experts payload, above small control allocs
         rc = ctypes.CDLL("libc.so.6").mallopt(_M_MMAP_THRESHOLD, _MMAP_THRESHOLD_BYTES)
         if rc != 1:
             raise RuntimeError(

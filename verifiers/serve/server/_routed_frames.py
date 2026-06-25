@@ -32,8 +32,6 @@ Dict path walked (post ``model_dump(mode="python")``):
     (``{"data", "shape", "start"}``) or absent/None.
 """
 
-from __future__ import annotations
-
 import math
 from typing import Any
 
@@ -156,7 +154,9 @@ def reattach_routed_attachments(control: dict, attachments: list[bytes]) -> dict
                 f"routed_experts frame ordinal {frame} out of range for {len(attachments)} attachment(s)"
             )
         if consumed[frame]:
-            raise ValueError(f"routed_experts frame ordinal {frame} referenced more than once")
+            raise ValueError(
+                f"routed_experts frame ordinal {frame} referenced more than once"
+            )
 
         data = attachments[frame]
         shape = desc["shape"]
