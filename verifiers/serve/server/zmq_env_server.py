@@ -41,22 +41,11 @@ class ZMQEnvServer(EnvServer):
         self.frontend.bind(self.address)
 
     async def send_response(
-        self,
-        client_id: bytes,
-        request_id: bytes,
-        response_bytes: bytes,
-        attachments: list[bytes],
+        self, client_id: bytes, request_id: bytes, response_bytes: bytes
     ) -> None:
-        """Forward a worker response to the client via the ROUTER socket.
-
-        ``attachments`` are the routed_experts raw frames (frames[3:] off the
-        worker), forwarded blind — the ROUTER only prepends ``client_id`` and
-        never inspects the trailing payload.
-        """
+        """Forward a worker response to the client via the ROUTER socket."""
         try:
-            await self.frontend.send_multipart(
-                [client_id, request_id, response_bytes, *attachments]
-            )
+            await self.frontend.send_multipart([client_id, request_id, response_bytes])
         except zmq.ZMQError as e:
             self.logger.warning(f"Failed to forward response: {e}")
 
@@ -90,10 +79,6 @@ class ZMQEnvServer(EnvServer):
 
                 if self.frontend in events:
                     frames = await self.frontend.recv_multipart()
-                    # G4: request leg stays STRICT (`!= 3`). Inbound rollout
-                    # requests, cancels, and health pings never carry
-                    # routed_experts attachments — only the response leg does.
-                    # Loosening this would mask client-side framing bugs.
                     if len(frames) != 3:
                         self.logger.warning(
                             f"Invalid message: expected 3 frames, got {len(frames)}"
