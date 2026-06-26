@@ -10,8 +10,10 @@ import asyncio
 import ctypes
 import gc
 import logging
+import os
 import signal
 import time
+from concurrent.futures import ThreadPoolExecutor
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any, cast
@@ -23,6 +25,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.clients import Client, resolve_client
+from verifiers.serve.server._routed_frames import detach_routed_attachments
 from verifiers.serve.types import (
     BaseResponse,
     RunGroupRequest,
@@ -35,6 +38,135 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.client_utils import resolve_client_config
 from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 from verifiers.utils.serve_utils import msgpack_encoder
+from verifiers.utils.thread_utils import register_executor
+
+# --- routed_experts multipart transport config (issue #76, PR1) ---------------
+#
+# Bulk routed_experts blobs ride on raw ZMQ multipart frames (frame 2..2+K-1)
+# instead of inside the msgpack control body. Two knobs govern the response leg:
+
+# Dedicated serializer pool for the (now lightened) control-body packb. Kept OFF
+# the 512-thread default executor so multi-MB packb GIL contention can't starve
+# the ~256 concurrent parse_response_tokens calls sharing the default pool.
+# packb is GIL-bound, so >16 threads buys nothing.
+_SER_EXECUTOR_THREADS = 16
+_SER_EXECUTOR_NAME = "vf-ser"
+
+# Byte-budget semaphore: bounds the O(workers x inflight) peak materialization of
+# attachment bytes in flight (extract -> pack -> send). The mallopt fix returns
+# pages to the OS on free but does NOT bound how many blobs are simultaneously
+# live; this does. Documented default below; override via env (fail-loud on a
+# misconfigured value — never a silently-clamped magic number).
+_BYTE_BUDGET_ENV = "VF_ROUTED_BYTE_BUDGET_MB"
+_DEFAULT_BYTE_BUDGET_MB = 512  # ~512 inflight x ~1 MB amortized blob, conservative
+# vs the unbounded ~2.3-3.6 GB pre-cutover peak.
+
+
+def _resolve_byte_budget_bytes() -> int:
+    """Resolve the routed-attachment byte budget (bytes) for this worker.
+
+    Reads ``VF_ROUTED_BYTE_BUDGET_MB`` if set, else the documented default.
+    Fails loud (refuses to start) on a misconfigured override rather than
+    silently degrading to an unbounded or clamped budget.
+    """
+    raw = os.environ.get(_BYTE_BUDGET_ENV)
+    if raw is None:
+        mb = _DEFAULT_BYTE_BUDGET_MB
+    else:
+        try:
+            mb = int(raw)
+        except ValueError as e:
+            raise RuntimeError(
+                f"{_BYTE_BUDGET_ENV}={raw!r} is not an integer; "
+                "refusing to start with a misconfigured routed byte budget"
+            ) from e
+        if mb <= 0:
+            raise RuntimeError(
+                f"{_BYTE_BUDGET_ENV}={raw!r} must be a positive number of MiB; "
+                "refusing to start with a misconfigured routed byte budget"
+            )
+    return mb << 20
+
+
+class ByteBudget:
+    """Async credit gate over a fixed pool of *bytes* (not a count).
+
+    A coroutine acquires ``n`` bytes before materializing+sending its
+    attachments and releases exactly ``n`` in a ``finally`` — including on
+    cancellation — so a cancel storm cannot leak credits into a deadlock (G2).
+    Acquiring more than the whole pool is allowed (it simply waits until the
+    pool is otherwise empty) so a single oversized message can never wedge.
+
+    ``release`` is **synchronous and never awaits**: it bumps the counter and
+    resolves waiter futures directly. This is the G2 load-bearing property — the
+    release call in a cancelled coroutine's ``finally`` cannot itself be
+    interrupted by the pending cancellation, so credits always return.
+    ``acquire`` is cancel-safe too: a cancellation while waiting drops the
+    pending request without ever having decremented the pool.
+
+    The charged amount is ``min(n, capacity)`` (an oversized message waits for an
+    otherwise-empty pool, then borrows the whole pool). ``acquire`` returns that
+    charge and the caller passes the **same value** back to ``release`` so the
+    debit/credit always net to zero.
+    """
+
+    def __init__(self, capacity: int) -> None:
+        self._capacity = capacity
+        self._available = capacity
+        # FIFO of (charge, future) for coroutines blocked on insufficient credit.
+        self._waiters: list[tuple[int, asyncio.Future[None]]] = []
+
+    @property
+    def available(self) -> int:
+        return self._available
+
+    async def acquire(self, n: int) -> int:
+        """Acquire credit for ``n`` bytes; return the charged amount to release."""
+        charge = min(n, self._capacity)
+        if not self._waiters and self._available >= charge:
+            self._available -= charge
+            return charge
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[None] = loop.create_future()
+        self._waiters.append((charge, fut))
+        try:
+            await fut
+        except asyncio.CancelledError:
+            # Cancelled while waiting: if granted concurrently with the cancel
+            # (fut already resolved), the charge was debited — give it back.
+            # Otherwise drop the still-pending request untouched.
+            if fut.done() and not fut.cancelled():
+                self.release(charge)
+            else:
+                try:
+                    self._waiters.remove((charge, fut))
+                except ValueError:
+                    pass
+            raise
+        # Granted: the waker already debited `charge` on our behalf.
+        return charge
+
+    def release(self, charge: int) -> None:
+        self._available += charge
+        self._wake()
+
+    def _wake(self) -> None:
+        """Grant credit to head-of-line waiters while the pool can satisfy them.
+
+        Strict FIFO (no overtaking) keeps the oversized-message case live: the
+        head waiter is served first the moment the pool is otherwise empty.
+        """
+        while self._waiters:
+            charge, fut = self._waiters[0]
+            if fut.cancelled():
+                self._waiters.pop(0)
+                continue
+            if self._available < charge:
+                break
+            self._waiters.pop(0)
+            self._available -= charge
+            fut.set_result(None)
 
 
 class EnvWorkerStats(BaseModel):
@@ -117,6 +249,22 @@ class EnvWorker:
         self.stats_socket.setsockopt(zmq.SNDHWM, 100)
         self.stats_socket.setsockopt(zmq.LINGER, 0)
         self.stats_socket.connect(stats_address)
+
+        # Dedicated serializer pool for the lightened control body (issue #76).
+        # Registered so scale_executors keeps its own scaling — pinned at 16
+        # threads (1:1 would track the 512 default, defeating the isolation).
+        self.ser_executor = ThreadPoolExecutor(
+            max_workers=_SER_EXECUTOR_THREADS,
+            thread_name_prefix=_SER_EXECUTOR_NAME,
+        )
+        register_executor(
+            _SER_EXECUTOR_NAME,
+            self.ser_executor,
+            scaling_fn=lambda _concurrency: _SER_EXECUTOR_THREADS,
+        )
+
+        # Byte-budget gate over routed-attachment bytes in flight (G2).
+        self.byte_budget = ByteBudget(_resolve_byte_budget_bytes())
 
         # state tracking
         self.clients: dict[str, Client] = {}
@@ -223,31 +371,59 @@ class EnvWorker:
             await send_error_response(repr(e))
             return
 
+        # Detach bulk routed_experts blobs onto an ordered attachment list, pack
+        # the lightened control body on the dedicated serializer pool, and send
+        # [client_id, request_id, control, *attachments] (issue #76, PR1). The
+        # whole extract -> pack -> send span runs under the byte-budget gate with
+        # a try/finally release so a cancel storm can't leak credits (G2). The
+        # packb thread cannot be cancelled, so its bytes stay accounted until it
+        # returns — we release only after send (or after a send failure).
         try:
-            response_bytes = await asyncio.to_thread(
-                lambda: cast(
-                    bytes,
-                    msgpack.packb(
-                        response.model_dump(mode="python", warnings=False),
-                        default=msgpack_encoder,
-                        use_bin_type=True,
-                    ),
-                )
-            )
+            control_payload = response.model_dump(mode="python", warnings=False)
+            _, attachments = detach_routed_attachments(control_payload)
         except Exception as e:
             self.logger.error(
-                f"Failed to serialize response for {request_id}: {e}",
+                f"Failed to detach routed_experts for {request_id}: {e}",
                 exc_info=True,
             )
-            await send_error_response(f"Response serialization failed: {repr(e)}")
+            await send_error_response(f"Response detach failed: {repr(e)}")
             return
 
+        attachment_bytes = sum(len(a) for a in attachments)
+        charge = await self.byte_budget.acquire(attachment_bytes)
         try:
-            await self.response_socket.send_multipart(
-                [client_id, request_id.encode(), response_bytes]
-            )
-        except zmq.ZMQError as e:
-            self.logger.warning(f"Failed to send response for {request_id[:7]}: {e}")
+            try:
+                control_bytes = await asyncio.get_running_loop().run_in_executor(
+                    self.ser_executor,
+                    lambda: cast(
+                        bytes,
+                        msgpack.packb(
+                            control_payload,
+                            default=msgpack_encoder,
+                            use_bin_type=True,
+                        ),
+                    ),
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to serialize response for {request_id}: {e}",
+                    exc_info=True,
+                )
+                await send_error_response(f"Response serialization failed: {repr(e)}")
+                return
+
+            try:
+                await self.response_socket.send_multipart(
+                    [client_id, request_id.encode(), control_bytes, *attachments]
+                )
+            except zmq.ZMQError as e:
+                self.logger.warning(
+                    f"Failed to send response for {request_id[:7]}: {e}"
+                )
+        finally:
+            # Synchronous release in the finally — G2: cannot be interrupted by a
+            # pending cancellation, so credits always return (no deadlock).
+            self.byte_budget.release(charge)
 
     async def stats_loop(self, interval: float = 10.0) -> None:
         """Loop to push worker stats to the router."""
@@ -392,6 +568,8 @@ class EnvWorker:
 
         await self.env._teardown()
 
+        self.ser_executor.shutdown(wait=False, cancel_futures=True)
+
         self.pull_socket.close()
         self.response_socket.close()
         self.stats_socket.close()
@@ -447,7 +625,9 @@ class EnvWorker:
         # Root cause: per-thread-arena fragmentation. Deeper "bulk tensors off the
         # message bus" cleanup tracked in joanvelja/prime-rl#76.
         _M_MMAP_THRESHOLD = -3
-        _MMAP_THRESHOLD_BYTES = 1 << 20  # 1 MiB: below the routed_experts payload, above small control allocs
+        _MMAP_THRESHOLD_BYTES = (
+            1 << 20
+        )  # 1 MiB: below the routed_experts payload, above small control allocs
         rc = ctypes.CDLL("libc.so.6").mallopt(_M_MMAP_THRESHOLD, _MMAP_THRESHOLD_BYTES)
         if rc != 1:
             raise RuntimeError(
