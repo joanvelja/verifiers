@@ -149,6 +149,12 @@ def reattach_routed_attachments(control: dict, attachments: list[bytes]) -> dict
             )
 
         frame = desc["frame"]
+        # bool is an int subclass — reject it explicitly so True/False can't pass
+        # the ordinal check (F4).
+        if not isinstance(frame, int) or isinstance(frame, bool):
+            raise ValueError(
+                f"routed_experts frame ordinal must be an int, got {type(frame).__name__}"
+            )
         if not (0 <= frame < len(attachments)):
             raise ValueError(
                 f"routed_experts frame ordinal {frame} out of range for {len(attachments)} attachment(s)"
@@ -161,6 +167,27 @@ def reattach_routed_attachments(control: dict, attachments: list[bytes]) -> dict
         data = attachments[frame]
         shape = desc["shape"]
         dtype = desc["dtype"]
+
+        # F4 descriptor validation — fail loud before the length check.
+        if dtype != DEFAULT_ROUTED_DTYPE:
+            raise ValueError(
+                f"routed_experts frame {frame} dtype={dtype!r}, expected {DEFAULT_ROUTED_DTYPE!r}"
+            )
+        if not isinstance(shape, (list, tuple)) or len(shape) != 3:
+            raise ValueError(
+                f"routed_experts frame {frame} shape={shape!r} must be 3 ints"
+            )
+        for dim in shape:
+            if not isinstance(dim, int) or isinstance(dim, bool) or dim < 0:
+                raise ValueError(
+                    f"routed_experts frame {frame} shape={shape!r} dims must be non-negative ints"
+                )
+        start = desc["start"]
+        if not isinstance(start, int) or isinstance(start, bool) or start < 0:
+            raise ValueError(
+                f"routed_experts frame {frame} start={start!r} must be a non-negative int"
+            )
+
         expected = math.prod(shape) * _itemsize(dtype)
         if len(data) != expected:
             raise ValueError(
@@ -173,7 +200,7 @@ def reattach_routed_attachments(control: dict, attachments: list[bytes]) -> dict
             "data": data,
             "shape": shape,
             "dtype": dtype,
-            "start": desc["start"],
+            "start": start,
         }
 
     if not all(consumed):
