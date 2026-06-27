@@ -12,6 +12,7 @@ import gc
 import logging
 import signal
 import time
+from concurrent.futures import ThreadPoolExecutor
 from multiprocessing.connection import Connection
 from pathlib import Path
 from typing import Any, cast
@@ -23,6 +24,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.clients import Client, resolve_client
+from verifiers.serve.server._routed_frames import detach_routed_attachments
 from verifiers.serve.types import (
     BaseResponse,
     RunGroupRequest,
@@ -35,6 +37,19 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.client_utils import resolve_client_config
 from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 from verifiers.utils.serve_utils import msgpack_encoder
+from verifiers.utils.thread_utils import register_executor
+
+# --- routed_experts multipart transport config (issue #76, PR1) ---------------
+#
+# Bulk routed_experts blobs ride on raw ZMQ multipart frames (frame 2..2+K-1)
+# instead of inside the msgpack control body. Two knobs govern the response leg:
+
+# Dedicated serializer pool for the (now lightened) control-body packb. Kept OFF
+# the 512-thread default executor so multi-MB packb GIL contention can't starve
+# the ~256 concurrent parse_response_tokens calls sharing the default pool.
+# packb is GIL-bound, so >16 threads buys nothing.
+_SER_EXECUTOR_THREADS = 16
+_SER_EXECUTOR_NAME = "vf-ser"
 
 
 class EnvWorkerStats(BaseModel):
@@ -117,6 +132,19 @@ class EnvWorker:
         self.stats_socket.setsockopt(zmq.SNDHWM, 100)
         self.stats_socket.setsockopt(zmq.LINGER, 0)
         self.stats_socket.connect(stats_address)
+
+        # Dedicated serializer pool for the lightened control body (issue #76).
+        # Registered so scale_executors keeps its own scaling — pinned at 16
+        # threads (1:1 would track the 512 default, defeating the isolation).
+        self.ser_executor = ThreadPoolExecutor(
+            max_workers=_SER_EXECUTOR_THREADS,
+            thread_name_prefix=_SER_EXECUTOR_NAME,
+        )
+        register_executor(
+            _SER_EXECUTOR_NAME,
+            self.ser_executor,
+            scaling_fn=lambda _concurrency: _SER_EXECUTOR_THREADS,
+        )
 
         # state tracking
         self.clients: dict[str, Client] = {}
@@ -223,16 +251,31 @@ class EnvWorker:
             await send_error_response(repr(e))
             return
 
+        # Detach bulk routed_experts blobs onto an ordered attachment list, pack
+        # the lightened control body on the dedicated serializer pool, and send
+        # [client_id, request_id, control, *attachments] (issue #76, PR1).
         try:
-            response_bytes = await asyncio.to_thread(
+            control_payload = response.model_dump(mode="python", warnings=False)
+            _, attachments = detach_routed_attachments(control_payload)
+        except Exception as e:
+            self.logger.error(
+                f"Failed to detach routed_experts for {request_id}: {e}",
+                exc_info=True,
+            )
+            await send_error_response(f"Response detach failed: {repr(e)}")
+            return
+
+        try:
+            control_bytes = await asyncio.get_running_loop().run_in_executor(
+                self.ser_executor,
                 lambda: cast(
                     bytes,
                     msgpack.packb(
-                        response.model_dump(mode="python", warnings=False),
+                        control_payload,
                         default=msgpack_encoder,
                         use_bin_type=True,
                     ),
-                )
+                ),
             )
         except Exception as e:
             self.logger.error(
@@ -244,7 +287,7 @@ class EnvWorker:
 
         try:
             await self.response_socket.send_multipart(
-                [client_id, request_id.encode(), response_bytes]
+                [client_id, request_id.encode(), control_bytes, *attachments]
             )
         except zmq.ZMQError as e:
             self.logger.warning(f"Failed to send response for {request_id[:7]}: {e}")
@@ -392,6 +435,8 @@ class EnvWorker:
 
         await self.env._teardown()
 
+        self.ser_executor.shutdown(wait=False, cancel_futures=True)
+
         self.pull_socket.close()
         self.response_socket.close()
         self.stats_socket.close()
@@ -447,7 +492,9 @@ class EnvWorker:
         # Root cause: per-thread-arena fragmentation. Deeper "bulk tensors off the
         # message bus" cleanup tracked in joanvelja/prime-rl#76.
         _M_MMAP_THRESHOLD = -3
-        _MMAP_THRESHOLD_BYTES = 1 << 20  # 1 MiB: below the routed_experts payload, above small control allocs
+        _MMAP_THRESHOLD_BYTES = (
+            1 << 20
+        )  # 1 MiB: below the routed_experts payload, above small control allocs
         rc = ctypes.CDLL("libc.so.6").mallopt(_M_MMAP_THRESHOLD, _MMAP_THRESHOLD_BYTES)
         if rc != 1:
             raise RuntimeError(

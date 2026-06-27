@@ -30,8 +30,9 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.process_utils import terminate_process, terminate_processes
 from verifiers.utils.serve_utils import make_ipc_address
 
-# Callback type: (client_id, request_id, response_bytes) -> awaitable
-OnResponseCallback = Callable[[bytes, bytes, bytes], Awaitable[None]]
+# Callback type: (client_id, request_id, response_bytes, attachments) -> awaitable
+# attachments are the routed_experts raw frames (frames[3:]), forwarded blind.
+OnResponseCallback = Callable[[bytes, bytes, bytes, list[bytes]], Awaitable[None]]
 
 
 @dataclass
@@ -231,7 +232,7 @@ class EnvRouter:
 
         Args:
             on_response: Called for each completed response with
-                ``(client_id, request_id, response_bytes)``.
+                ``(client_id, request_id, response_bytes, attachments)``.
             stop_event: Set to signal shutdown.
         """
         self.start_workers()
@@ -256,11 +257,19 @@ class EnvRouter:
                             )
                         except zmq.Again:
                             break
-                        if len(frames) != 3:
+                        # Response leg carries 3 control frames + K routed_experts
+                        # attachment frames (K>=0). G4: this is the ONE guard
+                        # flipped from `!= 3` to `< 3` — fewer than 3 is a
+                        # malformed control envelope (drop); trailing frames are
+                        # forwarded BLIND (no parse) to the client.
+                        if len(frames) < 3:
                             continue
-                        client_id, request_id, response_bytes = frames
+                        client_id, request_id, response_bytes = frames[:3]
+                        attachments = frames[3:]
                         self.complete_request(request_id)
-                        await on_response(client_id, request_id, response_bytes)
+                        await on_response(
+                            client_id, request_id, response_bytes, attachments
+                        )
 
                 # ── worker stats ───────────────────────────────────
                 if self.stats_pull in events:
